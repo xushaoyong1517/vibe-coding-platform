@@ -1,54 +1,22 @@
-import { NuqsAdapter } from 'nuqs/adapters/next/app'
-import { ChatProvider } from '@/lib/chat-context'
-import { CommandLogsStream } from '@/components/commands-logs/commands-logs-stream'
-import { ErrorMonitor } from '@/components/error-monitor/error-monitor'
-import { SandboxState } from '@/components/modals/sandbox-state'
-import { Toaster } from '@/components/ui/sonner'
-import type { ReactNode } from 'react'
 import type { Metadata } from 'next'
-import { Suspense } from 'react'
+import type { ReactNode } from 'react'
 import './globals.css'
 
-const title = '我的第一个项目'
-const description = `This is a demo of an end-to-end coding platform where the user can enter text prompts, and the agent will create a full stack application. It uses Vercel's AI Cloud services like Sandbox for secure code execution, AI Gateway for GPT-5 and other models support, Fluid Compute for efficient rendering and streaming, and it's built with Next.js and the AI SDK.`
-
 export const metadata: Metadata = {
-  title,
-  description,
-  openGraph: {
-    images: [
-      {
-        url: 'https://assets.vercel.com/image/upload/v1754588799/OSSvibecodingplatform/OG.png',
-      },
-    ],
-  },
-  twitter: {
-    card: 'summary_large_image',
-    images: [
-      {
-        url: 'https://assets.vercel.com/image/upload/v1754588799/OSSvibecodingplatform/OG.png',
-      },
-    ],
-  },
+  title: 'ValveQuote · 阀门智能报价',
+  description: '基于 AI 的阀门参数提取与 BOM 生成系统，支持自然语言、阀门编码、五环TAG多种输入方式',
 }
 
-export default function RootLayout({
-  children,
-}: Readonly<{ children: ReactNode }>) {
+export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en">
-      <body className="antialiased">
-        <Suspense fallback={null}>
-          <NuqsAdapter>
-            <ChatProvider>
-              <ErrorMonitor>{children}</ErrorMonitor>
-            </ChatProvider>
-          </NuqsAdapter>
-        </Suspense>
-        <Toaster />
-        <CommandLogsStream />
-        <SandboxState />
-      </body>
+    <html lang="zh">
+      <head>
+        <link
+          href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body>{children}</body>
     </html>
   )
 }
