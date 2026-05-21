@@ -2,9 +2,21 @@ import { generateText } from 'ai'
 import { NextResponse } from 'next/server'
 import { getModelOptions } from '@/ai/gateway'
 import { Models } from '@/ai/constants'
+import paramExtractPrompt from './skills/param-extract.md'
+import bomGeneratePrompt from './skills/bom-generate.md'
+
+const SKILLS: Record<string, string> = {
+  'param-extract': paramExtractPrompt,
+  'bom-generate': bomGeneratePrompt,
+}
 
 export async function POST(req: Request) {
-  const { system, message } = await req.json()
+  const { skill, message } = await req.json()
+
+  const system = SKILLS[skill as string]
+  if (!system) {
+    return NextResponse.json({ error: `未知 skill: ${skill}` }, { status: 400 })
+  }
 
   try {
     const { text } = await generateText({
