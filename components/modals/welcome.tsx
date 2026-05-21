@@ -48,7 +48,7 @@ export function Welcome(props: {
         >
           <div className="p-6 space-y-4 ">
             <h1 className="text-2xl sans-serif font-semibold tracking-tight mb-7">
-              OSS Vibe Coding Platform
+              我的第一个项目
             </h1>
             <p className="text-base text-primary">
               This is a <strong>demo</strong> of an end-to-end coding platform
