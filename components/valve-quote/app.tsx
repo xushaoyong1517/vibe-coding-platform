@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 
 // SKILL prompts 已移至服务端 app/api/claude/skills/
@@ -33,10 +34,57 @@ interface QuoteItem {
   备注?: string
 }
 
+interface ParamLibrary {
+  类型: string[]
+  DN: string[]
+  压力: string[]
+  主体: string[]
+  阀瓣阀闸: string[]
+  阀座: string[]
+  阀杆轴: string[]
+  螺柱: string[]
+  中腔填料: string[]
+  件号: string[]
+}
+
+const PARAM_LIB_TABS: { key: keyof ParamLibrary; label: string }[] = [
+  { key: '类型',    label: '类型' },
+  { key: 'DN',      label: 'DN' },
+  { key: '压力',    label: '压力' },
+  { key: '主体',    label: '主体' },
+  { key: '阀瓣阀闸', label: '阀瓣/阀闸' },
+  { key: '阀座',    label: '阀座' },
+  { key: '阀杆轴',  label: '阀杆/轴' },
+  { key: '螺柱',    label: '螺柱' },
+  { key: '中腔填料', label: '填料' },
+  { key: '件号',    label: '件号' },
+]
+
+const API_TRIM_NUMBERS = ['1#','2#','3#','4#','5#','6#','7#','8#','9#','10#','11#','12#','13#','14#','15#','16#','17#','18#']
+
+function initParamLib(params: Param[]): ParamLibrary {
+  const uniq = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort()
+  const numSort = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort((a, b) => Number(a) - Number(b))
+  const trimSort = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort((a, b) => parseInt(a) - parseInt(b))
+  return {
+    类型:    uniq(params.map(p => p.类型)),
+    DN:       numSort(params.map(p => String(p.DN))),
+    压力:    numSort(params.map(p => String(p.压力))),
+    主体:    uniq(params.map(p => p.主体)),
+    阀瓣阀闸: uniq(params.map(p => p.阀瓣阀闸)),
+    阀座:    uniq(params.map(p => p.阀座)),
+    阀杆轴:  uniq(params.map(p => p.阀杆轴)),
+    螺柱:    uniq(params.map(p => p.螺柱)),
+    中腔填料: uniq(params.map(p => p.中腔填料)),
+    件号:    trimSort([...API_TRIM_NUMBERS, ...params.map(p => p.件号)]),
+  }
+}
+
 interface BOMRow {
   序号: number
   零件: string
   材质: string
+  数量: number
   来源: string
 }
 
@@ -45,15 +93,21 @@ interface BOMResult {
   bom: BOMRow[]
   牌1: string
   牌2: string
+  来源?: 'exact' | 'fuzzy' | 'ai' | 'template'
+  历史次数?: number
+  差异字段?: string[]
 }
 
 interface Quote {
   id: string
   客户: string
+  联系人?: string
   订单号: string
   日期: string
+  交期?: string
   状态: string
   台计: number
+  原始需求?: string
   items: QuoteItem[]
   bomData?: BOMResult[]
 }
@@ -86,13 +140,369 @@ interface TrimRow {
   名称: string
 }
 
+interface BillOfMaterial {
+  产品规格: string
+  序号: string
+  图号标准号: string
+  零件名称: string
+  规格尺寸: string
+  材质: string
+  数量: number
+}
+
+const BOM_LIST: BillOfMaterial[] = [
+  // ─── 2-150LB ───
+  { 产品规格:'2-150LB', 序号:'',   图号标准号:'2Z40H-150LbC-00',  零件名称:'2-150LB',    规格尺寸:'',                材质:'非王/FMS',               数量:1 },
+  { 产品规格:'2-150LB', 序号:'1',  图号标准号:'2Z40H-150LbC-01',  零件名称:'阀体',        规格尺寸:'',                材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'2-150LB', 序号:'1',  图号标准号:'2Z40H-300Lb-02',   零件名称:'阀座',        规格尺寸:'',                材质:'ASTM A105N+D507Mo',       数量:2 },
+  { 产品规格:'2-150LB', 序号:'2',  图号标准号:'2Z40H-300Lb-03',   零件名称:'闸板',        规格尺寸:'',                材质:'ASTM A216 WCB+D577',      数量:1 },
+  { 产品规格:'2-150LB', 序号:'2',  图号标准号:'2Z40H-300Lb-04',   零件名称:'阀杆',        规格尺寸:'20x295',          材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-150LB', 序号:'3',  图号标准号:'2Z40H-150LbC-05',  零件名称:'包覆垫片',    规格尺寸:'109x82x12x3.2',   材质:'304+柔性石墨',             数量:1 },
+  { 产品规格:'2-150LB', 序号:'3',  图号标准号:'2Z40H-150LbC-06',  零件名称:'阀盖',        规格尺寸:'闸板重量',         材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'2-150LB', 序号:'4',  图号标准号:'YQFM/J01-15',      零件名称:'全螺纹螺柱',  规格尺寸:'1/2-13x65UNC',    材质:'ASTM A193 B7',            数量:6 },
+  { 产品规格:'2-150LB', 序号:'4',  图号标准号:'ASME B18.2.2-2022',零件名称:'六角厚螺母',  规格尺寸:'1/2-13UNC',       材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'2-150LB', 序号:'5',  图号标准号:'YQFM/J01-02',      零件名称:'上密封座',    规格尺寸:'20/M36x2',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-150LB', 序号:'5',  图号标准号:'YQFM/J01-14',      零件名称:'上下填料',    规格尺寸:'A20x32x6',        材质:'304+柔性石墨编织',         数量:2 },
+  { 产品规格:'2-150LB', 序号:'6',  图号标准号:'YQFM/J01-14',      零件名称:'中间填料',    规格尺寸:'B20x32x6',        材质:'柔性石墨',                 数量:3 },
+  { 产品规格:'2-150LB', 序号:'6',  图号标准号:'YQFM/J01-03',      零件名称:'填料压套',    规格尺寸:'20x32x23',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-150LB', 序号:'7',  图号标准号:'YQFM/J01-04',      零件名称:'填料压板',    规格尺寸:'20/100/75/16',    材质:'ASTM A105N',              数量:1 },
+  { 产品规格:'2-150LB', 序号:'7',  图号标准号:'GB/T119.1-2000',   零件名称:'圆柱销',      规格尺寸:'B8x30',           材质:'GB/T699,35',              数量:2 },
+  { 产品规格:'2-150LB', 序号:'8',  图号标准号:'YQFM/J01-16',      零件名称:'活节螺栓',    规格尺寸:'3/8-16x55NUC',    材质:'ASTM A193 B7',            数量:2 },
+  { 产品规格:'2-150LB', 序号:'8',  图号标准号:'GB/T97.1-2002',    零件名称:'平垫圈',      规格尺寸:'10',              材质:'GB/T699,25',              数量:2 },
+  { 产品规格:'2-150LB', 序号:'9',  图号标准号:'ASME B18.2.2-2022',零件名称:'六角厚螺母',  规格尺寸:'3/8-16NUC',       材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'2-150LB', 序号:'9',  图号标准号:'YQFM/J01-06',      零件名称:'阀杆螺母',    规格尺寸:'A20x4/L68/D36/□32',材质:'GB/T1176,ZCuAl10Fe3',   数量:1 },
+  { 产品规格:'2-150LB', 序号:'10', 图号标准号:'JB/T7940.1-1995',  零件名称:'油杯',        规格尺寸:'M10x1',           材质:'组合件',                  数量:1 },
+  { 产品规格:'2-150LB', 序号:'10', 图号标准号:'YQFM/J01-08',      零件名称:'螺母压盖',    规格尺寸:'M48x2/36/18+5',   材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'2-150LB', 序号:'11', 图号标准号:'YQFM/J01-09',      零件名称:'手轮',        规格尺寸:'A200/□32/20',     材质:'GB/T9940,KTH330-08',      数量:1 },
+  { 产品规格:'2-150LB', 序号:'11', 图号标准号:'YQFM/J01-11',      零件名称:'锁紧螺母',    规格尺寸:'M30x1.5/8',       材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'2-150LB', 序号:'12', 图号标准号:'GB/T78-2007',      零件名称:'紧定螺钉',    规格尺寸:'M5x8',            材质:'GB/T699,35',              数量:1 },
+  // ─── 2-300LB ───
+  { 产品规格:'2-300LB', 序号:'',   图号标准号:'2Z40H-300Lb-00',   零件名称:'2-300LB',     规格尺寸:'',                材质:'非王/FMS',               数量:1 },
+  { 产品规格:'2-300LB', 序号:'1',  图号标准号:'2Z40H-300Lb-01',   零件名称:'阀体',        规格尺寸:'',                材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'2-300LB', 序号:'2',  图号标准号:'2Z40H-300Lb-02',   零件名称:'阀座',        规格尺寸:'',                材质:'ASTM A105N+D507Mo',       数量:2 },
+  { 产品规格:'2-300LB', 序号:'3',  图号标准号:'2Z40H-300Lb-03',   零件名称:'闸板',        规格尺寸:'',                材质:'ASTM A216 WCB+D577',      数量:1 },
+  { 产品规格:'2-300LB', 序号:'4',  图号标准号:'2Z40H-300Lb-04',   零件名称:'阀杆',        规格尺寸:'20x295',          材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-300LB', 序号:'5',  图号标准号:'YQFM/J01-01',      零件名称:'缠绕垫片',    规格尺寸:'90x110x3.2',      材质:'304+柔性石墨',             数量:1 },
+  { 产品规格:'2-300LB', 序号:'6',  图号标准号:'2Z40H-300Lb-06',   零件名称:'阀盖',        规格尺寸:'闸板重量',         材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'2-300LB', 序号:'7',  图号标准号:'YQFM/J01-15',      零件名称:'全螺纹螺柱',  规格尺寸:'7/16-14x75UNC',   材质:'ASTM A193 B7',            数量:8 },
+  { 产品规格:'2-300LB', 序号:'8',  图号标准号:'ASME B18.2.2-2022',零件名称:'六角厚螺母',  规格尺寸:'7/16-14UNC',      材质:'ASTM A194 2H',            数量:16},
+  { 产品规格:'2-300LB', 序号:'9',  图号标准号:'YQFM/J01-02',      零件名称:'上密封座',    规格尺寸:'20/M36x2',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-300LB', 序号:'10', 图号标准号:'YQFM/J01-14',      零件名称:'上下填料',    规格尺寸:'A20x32x6',        材质:'304+柔性石墨编织',         数量:2 },
+  { 产品规格:'2-300LB', 序号:'11', 图号标准号:'YQFM/J01-14',      零件名称:'中间填料',    规格尺寸:'B20x32x6',        材质:'柔性石墨',                 数量:3 },
+  { 产品规格:'2-300LB', 序号:'12', 图号标准号:'YQFM/J01-03',      零件名称:'填料压套',    规格尺寸:'20x32x23',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-300LB', 序号:'13', 图号标准号:'YQFM/J01-04',      零件名称:'填料压板',    规格尺寸:'20/100/75/16',    材质:'ASTM A105N',              数量:1 },
+  { 产品规格:'2-300LB', 序号:'14', 图号标准号:'GB/T119.1-2000',   零件名称:'圆柱销',      规格尺寸:'B8x30',           材质:'GB/T699,35',              数量:2 },
+  { 产品规格:'2-300LB', 序号:'15', 图号标准号:'YQFM/J01-16',      零件名称:'活节螺栓',    规格尺寸:'3/8-16x55NUC',    材质:'ASTM A193 B7',            数量:2 },
+  { 产品规格:'2-300LB', 序号:'16', 图号标准号:'GB/T97.1-2002',    零件名称:'平垫圈',      规格尺寸:'10',              材质:'GB/T699,25',              数量:2 },
+  { 产品规格:'2-300LB', 序号:'17', 图号标准号:'ASME B18.2.2-2022',零件名称:'六角厚螺母',  规格尺寸:'3/8-16NUC',       材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'2-300LB', 序号:'18', 图号标准号:'YQFM/J01-06',      零件名称:'阀杆螺母',    规格尺寸:'A20x4/L68/D36/□32',材质:'GB/T1176,ZCuAl10Fe3',   数量:1 },
+  { 产品规格:'2-300LB', 序号:'19', 图号标准号:'JB/T7940.1-1995',  零件名称:'油杯',        规格尺寸:'M10x1',           材质:'组合件',                  数量:1 },
+  { 产品规格:'2-300LB', 序号:'20', 图号标准号:'YQFM/J01-08',      零件名称:'螺母压盖',    规格尺寸:'M48x2/36/18+5',   材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'2-300LB', 序号:'21', 图号标准号:'YQFM/J01-09',      零件名称:'手轮',        规格尺寸:'A200/□32/20',     材质:'GB/T9940,KTH330-08',      数量:1 },
+  { 产品规格:'2-300LB', 序号:'22', 图号标准号:'YQFM/J01-11',      零件名称:'锁紧螺母',    规格尺寸:'M30x1.5/8',       材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'2-300LB', 序号:'23', 图号标准号:'GB/T78-2007',      零件名称:'紧定螺钉',    规格尺寸:'M5x8',            材质:'GB/T699,35',              数量:1 },
+  // ─── 2-600LB ───
+  { 产品规格:'2-600LB', 序号:'',   图号标准号:'2Z40H-600Lb-00',   零件名称:'2-600LB',     规格尺寸:'',                材质:'非王/FMS',               数量:1 },
+  { 产品规格:'2-600LB', 序号:'1',  图号标准号:'2Z40H-600Lb-01',   零件名称:'阀体',        规格尺寸:'',                材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'2-600LB', 序号:'1',  图号标准号:'2Z40H-600Lb-02',   零件名称:'阀座',        规格尺寸:'',                材质:'ASTM A105N+D507Mo',       数量:2 },
+  { 产品规格:'2-600LB', 序号:'2',  图号标准号:'2Z40H-600Lb-03',   零件名称:'闸板',        规格尺寸:'',                材质:'ASTM A216 WCB+D577',      数量:1 },
+  { 产品规格:'2-600LB', 序号:'2',  图号标准号:'2Z40H-600Lb-04',   零件名称:'阀杆',        规格尺寸:'20x325',          材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-600LB', 序号:'3',  图号标准号:'YQFM/J01-01',      零件名称:'缠绕垫片',    规格尺寸:'95x115x3.2',      材质:'304+柔性石墨',             数量:1 },
+  { 产品规格:'2-600LB', 序号:'3',  图号标准号:'2Z40H-600Lb-06',   零件名称:'阀盖',        规格尺寸:'闸板重量',         材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'2-600LB', 序号:'4',  图号标准号:'YQFM/J01-15',      零件名称:'全螺纹螺柱',  规格尺寸:'M14x95',          材质:'ASTM A193 B16',           数量:8 },
+  { 产品规格:'2-600LB', 序号:'4',  图号标准号:'GB/T6175-2016',    零件名称:'六角厚螺母',  规格尺寸:'M14',             材质:'ASTM A194 7',             数量:2 },
+  { 产品规格:'2-600LB', 序号:'5',  图号标准号:'YQFM/J01-02',      零件名称:'上密封座',    规格尺寸:'20/M36x2',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-600LB', 序号:'5',  图号标准号:'YQFM/J01-14',      零件名称:'上下填料',    规格尺寸:'A20x32x6',        材质:'304+柔性石墨编织',         数量:2 },
+  { 产品规格:'2-600LB', 序号:'6',  图号标准号:'YQFM/J01-14',      零件名称:'中间填料',    规格尺寸:'B20x32x6',        材质:'柔性石墨',                 数量:5 },
+  { 产品规格:'2-600LB', 序号:'6',  图号标准号:'YQFM/J01-03',      零件名称:'填料压套',    规格尺寸:'20x32x23',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'2-600LB', 序号:'7',  图号标准号:'YQFM/J01-04',      零件名称:'填料压板',    规格尺寸:'20/110/80/16',    材质:'ASTM A105N',              数量:1 },
+  { 产品规格:'2-600LB', 序号:'7',  图号标准号:'GB/T119.1-2000',   零件名称:'圆柱销',      规格尺寸:'B10x35',          材质:'GB/T699,35',              数量:2 },
+  { 产品规格:'2-600LB', 序号:'8',  图号标准号:'GB/T798-2021',     零件名称:'活节螺栓',    规格尺寸:'M12x65',          材质:'ASTM A193 B16',           数量:2 },
+  { 产品规格:'2-600LB', 序号:'8',  图号标准号:'GB/T97.1-2002',    零件名称:'平垫圈',      规格尺寸:'12',              材质:'304',                     数量:2 },
+  { 产品规格:'2-600LB', 序号:'9',  图号标准号:'GB/T6175-2016',    零件名称:'六角厚螺母',  规格尺寸:'M12',             材质:'ASTM A194 7',             数量:2 },
+  { 产品规格:'2-600LB', 序号:'9',  图号标准号:'YQFM/J01-06',      零件名称:'阀杆螺母',    规格尺寸:'A20x4/L68/D36/□32',材质:'GB/T1176,ZCuAl10Fe3',   数量:1 },
+  { 产品规格:'2-600LB', 序号:'10', 图号标准号:'JB/T7940.1-1995',  零件名称:'油杯',        规格尺寸:'M10x1',           材质:'组合件',                  数量:1 },
+  { 产品规格:'2-600LB', 序号:'10', 图号标准号:'YQFM/J01-08',      零件名称:'螺母压盖',    规格尺寸:'M48x2/36/18+5',   材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'2-600LB', 序号:'11', 图号标准号:'YQFM/J01-09',      零件名称:'手轮',        规格尺寸:'A250/□32/21',     材质:'GB/T9940,KTH330-08',      数量:1 },
+  { 产品规格:'2-600LB', 序号:'11', 图号标准号:'YQFM/J01-11',      零件名称:'锁紧螺母',    规格尺寸:'M30x1.5/8',       材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'2-600LB', 序号:'12', 图号标准号:'GB/T78-2007',      零件名称:'紧定螺钉',    规格尺寸:'M5x8',            材质:'GB/T699,35',              数量:1 },
+  // ─── 3-150LB ───
+  { 产品规格:'3-150LB', 序号:'',   图号标准号:'3Z40H-150LbC-00',  零件名称:'3-150LB',     规格尺寸:'',                材质:'非王/FMS',               数量:1 },
+  { 产品规格:'3-150LB', 序号:'1',  图号标准号:'3Z40H-150LbC-01',  零件名称:'阀体',        规格尺寸:'',                材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'3-150LB', 序号:'1',  图号标准号:'3Z40H-300Lb-02',   零件名称:'阀座',        规格尺寸:'',                材质:'ASTM A105N+D507Mo',       数量:2 },
+  { 产品规格:'3-150LB', 序号:'2',  图号标准号:'3Z40H-300Lb-03',   零件名称:'闸板',        规格尺寸:'',                材质:'ASTM A216 WCB+D577',      数量:1 },
+  { 产品规格:'3-150LB', 序号:'2',  图号标准号:'3Z40H-300Lb-04',   零件名称:'阀杆',        规格尺寸:'23x345',          材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-150LB', 序号:'3',  图号标准号:'3Z40H-150LbC-05',  零件名称:'包覆垫片',    规格尺寸:'155x102x13x3.2',  材质:'304+柔性石墨',             数量:1 },
+  { 产品规格:'3-150LB', 序号:'3',  图号标准号:'3Z40H-150LbC-06',  零件名称:'阀盖',        规格尺寸:'闸板重量',         材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'3-150LB', 序号:'4',  图号标准号:'YQFM/J01-15',      零件名称:'全螺纹螺柱',  规格尺寸:'1/2-13x75UNC',    材质:'ASTM A193 B7',            数量:8 },
+  { 产品规格:'3-150LB', 序号:'4',  图号标准号:'ASME B18.2.2-2022',零件名称:'六角厚螺母',  规格尺寸:'1/2-13UNC',       材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'3-150LB', 序号:'5',  图号标准号:'YQFM/J01-02',      零件名称:'上密封座',    规格尺寸:'23/M39x2',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-150LB', 序号:'5',  图号标准号:'YQFM/J01-14',      零件名称:'上下填料',    规格尺寸:'A23x36x6.5',      材质:'304+柔性石墨编织',         数量:2 },
+  { 产品规格:'3-150LB', 序号:'6',  图号标准号:'YQFM/J01-14',      零件名称:'中间填料',    规格尺寸:'B23x36x6.5',      材质:'柔性石墨',                 数量:3 },
+  { 产品规格:'3-150LB', 序号:'6',  图号标准号:'YQFM/J01-03',      零件名称:'填料压套',    规格尺寸:'23x32x23',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-150LB', 序号:'7',  图号标准号:'YQFM/J01-04',      零件名称:'填料压板',    规格尺寸:'23/114/85/16',    材质:'ASTM A105N',              数量:1 },
+  { 产品规格:'3-150LB', 序号:'7',  图号标准号:'GB/T119.1-2000',   零件名称:'圆柱销',      规格尺寸:'B10x35',          材质:'GB/T699,35',              数量:2 },
+  { 产品规格:'3-150LB', 序号:'8',  图号标准号:'YQFM/J01-16',      零件名称:'活节螺栓',    规格尺寸:'1/2-13x65NUC',    材质:'ASTM A193 B7',            数量:2 },
+  { 产品规格:'3-150LB', 序号:'8',  图号标准号:'GB/T97.1-2002',    零件名称:'平垫圈',      规格尺寸:'12',              材质:'GB/T699,25',              数量:2 },
+  { 产品规格:'3-150LB', 序号:'9',  图号标准号:'ASME B18.2.2-2022',零件名称:'六角厚螺母',  规格尺寸:'1/2-13NUC',       材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'3-150LB', 序号:'9',  图号标准号:'YQFM/J01-06',      零件名称:'阀杆螺母',    规格尺寸:'A23x5/L71/D40/□36',材质:'GB/T1176,ZCuAl10Fe3',   数量:1 },
+  { 产品规格:'3-150LB', 序号:'10', 图号标准号:'JB/T7940.1-1995',  零件名称:'油杯',        规格尺寸:'M10x1',           材质:'组合件',                  数量:1 },
+  { 产品规格:'3-150LB', 序号:'10', 图号标准号:'YQFM/J01-08',      零件名称:'螺母压盖',    规格尺寸:'M52x2/40/18+5',   材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'3-150LB', 序号:'11', 图号标准号:'YQFM/J01-09',      零件名称:'手轮',        规格尺寸:'A250/□36/21',     材质:'GB/T9940,KTH330-08',      数量:1 },
+  { 产品规格:'3-150LB', 序号:'11', 图号标准号:'YQFM/J01-11',      零件名称:'锁紧螺母',    规格尺寸:'M33x1.5/10',      材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'3-150LB', 序号:'12', 图号标准号:'GB/T78-2007',      零件名称:'紧定螺钉',    规格尺寸:'M5x8',            材质:'GB/T699,35',              数量:1 },
+  // ─── 3-300LB ───
+  { 产品规格:'3-300LB', 序号:'',   图号标准号:'3Z40H-300Lb-00',   零件名称:'3-300LB',     规格尺寸:'',                材质:'非王/FMS',               数量:1 },
+  { 产品规格:'3-300LB', 序号:'1',  图号标准号:'3Z40H-300Lb-01',   零件名称:'阀体',        规格尺寸:'',                材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'3-300LB', 序号:'1',  图号标准号:'3Z40H-300Lb-02',   零件名称:'阀座',        规格尺寸:'',                材质:'ASTM A105N+D507Mo',       数量:2 },
+  { 产品规格:'3-300LB', 序号:'2',  图号标准号:'3Z40H-300Lb-03',   零件名称:'闸板',        规格尺寸:'',                材质:'ASTM A216 WCB+D577',      数量:1 },
+  { 产品规格:'3-300LB', 序号:'2',  图号标准号:'3Z40H-300Lb-04',   零件名称:'阀杆',        规格尺寸:'23x345',          材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-300LB', 序号:'3',  图号标准号:'YQFM/J01-01',      零件名称:'缠绕垫片',    规格尺寸:'125x145x3.2',     材质:'304+柔性石墨',             数量:1 },
+  { 产品规格:'3-300LB', 序号:'3',  图号标准号:'3Z40H-300Lb-04',   零件名称:'阀盖',        规格尺寸:'闸板重量',         材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'3-300LB', 序号:'4',  图号标准号:'YQFM/J01-15',      零件名称:'全螺纹螺柱',  规格尺寸:'M14x90',          材质:'ASTM A193 B7',            数量:12},
+  { 产品规格:'3-300LB', 序号:'4',  图号标准号:'GB/T6175-2016',    零件名称:'六角厚螺母',  规格尺寸:'M14',             材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'3-300LB', 序号:'5',  图号标准号:'YQFM/J01-02',      零件名称:'上密封座',    规格尺寸:'23/M39x2',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-300LB', 序号:'5',  图号标准号:'YQFM/J01-14',      零件名称:'上下填料',    规格尺寸:'A23x36x6.5',      材质:'304+柔性石墨编织',         数量:2 },
+  { 产品规格:'3-300LB', 序号:'6',  图号标准号:'YQFM/J01-14',      零件名称:'中间填料',    规格尺寸:'B23x36x6.5',      材质:'柔性石墨',                 数量:4 },
+  { 产品规格:'3-300LB', 序号:'6',  图号标准号:'YQFM/J01-03',      零件名称:'填料压套',    规格尺寸:'23x32x23',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-300LB', 序号:'7',  图号标准号:'YQFM/J01-04',      零件名称:'填料压板',    规格尺寸:'23/114/85/16',    材质:'ASTM A105N',              数量:1 },
+  { 产品规格:'3-300LB', 序号:'7',  图号标准号:'GB/T119.1-2000',   零件名称:'圆柱销',      规格尺寸:'B10x35',          材质:'GB/T699,35',              数量:2 },
+  { 产品规格:'3-300LB', 序号:'8',  图号标准号:'GB/T798-2021',     零件名称:'活节螺栓',    规格尺寸:'M12x65',          材质:'ASTM A193 B7',            数量:2 },
+  { 产品规格:'3-300LB', 序号:'8',  图号标准号:'GB/T97.1-2002',    零件名称:'平垫圈',      规格尺寸:'12',              材质:'GB/T699,25',              数量:2 },
+  { 产品规格:'3-300LB', 序号:'9',  图号标准号:'GB/T6175-2016',    零件名称:'六角厚螺母',  规格尺寸:'M12',             材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'3-300LB', 序号:'9',  图号标准号:'YQFM/J01-06',      零件名称:'阀杆螺母',    规格尺寸:'A23x5/L71/D40/□36',材质:'GB/T1176,ZCuAl10Fe3',   数量:1 },
+  { 产品规格:'3-300LB', 序号:'10', 图号标准号:'JB/T7940.1-1995',  零件名称:'油杯',        规格尺寸:'M10x1',           材质:'组合件',                  数量:1 },
+  { 产品规格:'3-300LB', 序号:'10', 图号标准号:'YQFM/J01-08',      零件名称:'螺母压盖',    规格尺寸:'M52x2/40/18+5',   材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'3-300LB', 序号:'11', 图号标准号:'YQFM/J01-09',      零件名称:'手轮',        规格尺寸:'A250/□36/21',     材质:'GB/T9940,KTH330-08',      数量:1 },
+  { 产品规格:'3-300LB', 序号:'11', 图号标准号:'YQFM/J01-11',      零件名称:'锁紧螺母',    规格尺寸:'M33x1.5/10',      材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'3-300LB', 序号:'12', 图号标准号:'GB/T78-2007',      零件名称:'紧定螺钉',    规格尺寸:'M5x8',            材质:'GB/T699,35',              数量:1 },
+  // ─── 3-600LB ───
+  { 产品规格:'3-600LB', 序号:'',   图号标准号:'3Z40H-600Lb-00',   零件名称:'3-600LB',     规格尺寸:'',                材质:'非王/FMS',               数量:1 },
+  { 产品规格:'3-600LB', 序号:'1',  图号标准号:'3Z40H-600Lb-01',   零件名称:'阀体',        规格尺寸:'',                材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'3-600LB', 序号:'1',  图号标准号:'3Z40H-600Lb-02',   零件名称:'阀座',        规格尺寸:'',                材质:'ASTM A105N+D507Mo',       数量:2 },
+  { 产品规格:'3-600LB', 序号:'2',  图号标准号:'3Z40H-600Lb-03',   零件名称:'闸板',        规格尺寸:'',                材质:'ASTM A216 WCB+D577',      数量:1 },
+  { 产品规格:'3-600LB', 序号:'2',  图号标准号:'3Z40H-600Lb-04',   零件名称:'阀杆',        规格尺寸:'26x395',          材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-600LB', 序号:'3',  图号标准号:'YQFM/J01-01',      零件名称:'缠绕垫片',    规格尺寸:'125x145x3.2',     材质:'304+柔性石墨',             数量:1 },
+  { 产品规格:'3-600LB', 序号:'3',  图号标准号:'3Z40H-600Lb-06',   零件名称:'阀盖',        规格尺寸:'闸板重量',         材质:'ASTM A216 WCB',           数量:1 },
+  { 产品规格:'3-600LB', 序号:'4',  图号标准号:'YQFM/J01-02',      零件名称:'上密封座',    规格尺寸:'26/M42x2',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-600LB', 序号:'4',  图号标准号:'YQFM/J01-15',      零件名称:'全螺纹螺柱',  规格尺寸:'M16x110',         材质:'ASTM A193 B7',            数量:12},
+  { 产品规格:'3-600LB', 序号:'5',  图号标准号:'GB/T6175-2016',    零件名称:'六角厚螺母',  规格尺寸:'M16',             材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'3-600LB', 序号:'5',  图号标准号:'3Z40H-600Lb-07',   零件名称:'填料垫',      规格尺寸:'26x38x19',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-600LB', 序号:'6',  图号标准号:'YQFM/J01-14',      零件名称:'上下填料',    规格尺寸:'A26x38x6',        材质:'304+柔性石墨编织',         数量:2 },
+  { 产品规格:'3-600LB', 序号:'6',  图号标准号:'YQFM/J01-14',      零件名称:'中间填料',    规格尺寸:'B26x38x6',        材质:'柔性石墨',                 数量:4 },
+  { 产品规格:'3-600LB', 序号:'7',  图号标准号:'YQFM/J01-03',      零件名称:'填料压套',    规格尺寸:'26x38x23',        材质:'ASTM A276 T410',          数量:1 },
+  { 产品规格:'3-600LB', 序号:'7',  图号标准号:'YQFM/J01-04',      零件名称:'填料压板',    规格尺寸:'26/125/95/18',    材质:'ASTM A105N',              数量:1 },
+  { 产品规格:'3-600LB', 序号:'8',  图号标准号:'GB/T119.1-2000',   零件名称:'圆柱销',      规格尺寸:'B10x35',          材质:'GB/T699,35',              数量:2 },
+  { 产品规格:'3-600LB', 序号:'8',  图号标准号:'GB/T798-2021',     零件名称:'活节螺栓',    规格尺寸:'M12x70',          材质:'ASTM A193 B7',            数量:2 },
+  { 产品规格:'3-600LB', 序号:'9',  图号标准号:'GB/T97.1-2002',    零件名称:'平垫圈',      规格尺寸:'12',              材质:'GB/T699,25',              数量:2 },
+  { 产品规格:'3-600LB', 序号:'9',  图号标准号:'GB/T6175-2016',    零件名称:'六角厚螺母',  规格尺寸:'M12',             材质:'ASTM A194 2H',            数量:2 },
+  { 产品规格:'3-600LB', 序号:'10', 图号标准号:'',                  零件名称:'垫圈',        规格尺寸:'32x52x3',         材质:'GB/T699,25',              数量:2 },
+  { 产品规格:'3-600LB', 序号:'10', 图号标准号:'YQFM/J01-06',      零件名称:'阀杆螺母',    规格尺寸:'A26x5/L80/D42/□38',材质:'GB/T1176,ZCuAl10Fe3',   数量:1 },
+  { 产品规格:'3-600LB', 序号:'11', 图号标准号:'JB/T7940.1-1995',  零件名称:'油杯',        规格尺寸:'M10x1',           材质:'组合件',                  数量:1 },
+  { 产品规格:'3-600LB', 序号:'11', 图号标准号:'YQFM/J01-08',      零件名称:'螺母压盖',    规格尺寸:'M55x2/42/20+6',   材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'3-600LB', 序号:'12', 图号标准号:'YQFM/J01-09',      零件名称:'手轮',        规格尺寸:'A300/□38/26',     材质:'GB/T9940,KTH330-08',      数量:1 },
+  { 产品规格:'3-600LB', 序号:'12', 图号标准号:'YQFM/J01-11',      零件名称:'锁紧螺母',    规格尺寸:'M36x1.5/10',      材质:'GB/T699,25',              数量:1 },
+  { 产品规格:'3-600LB', 序号:'13', 图号标准号:'GB/T78-2007',      零件名称:'紧定螺钉',    规格尺寸:'M5x8',            材质:'GB/T699,35',              数量:1 },
+]
+
+interface ValvePart {
+  零件编号: string
+  零件名称: string
+  规格尺寸: string
+  材质: string
+}
+
+const VALVE_PARTS: ValvePart[] = [
+  { 零件编号: '2Z40H-150LbC-00', 零件名称: '2-150LB',    规格尺寸: '',               材质: '非王/FMS' },
+  { 零件编号: '2Z40H-150LbC-01', 零件名称: '阀体',        规格尺寸: '',               材质: 'ASTM A216 WCB' },
+  { 零件编号: '2Z40H-300Lb-02',  零件名称: '阀座',        规格尺寸: '',               材质: 'ASTM A105N+D507Mo' },
+  { 零件编号: '2Z40H-300Lb-03',  零件名称: '闸板',        规格尺寸: '',               材质: 'ASTM A216 WCB+D577' },
+  { 零件编号: '2Z40H-300Lb-04',  零件名称: '阀杆',        规格尺寸: '20x295',         材质: 'ASTM A276 T410' },
+  { 零件编号: '2Z40H-150LbC-05', 零件名称: '包覆垫片',    规格尺寸: '109x82x12x3.2',  材质: '304+柔性石墨' },
+  { 零件编号: '2Z40H-150LbC-06', 零件名称: '阀盖',        规格尺寸: '闸板重量',        材质: 'ASTM A216 WCB' },
+  { 零件编号: 'YQFM/J01-15',     零件名称: '全螺纹螺柱',  规格尺寸: '1/2-13x65UNC',   材质: 'ASTM A193 B7' },
+  { 零件编号: 'ASME B18.2.2-2022',零件名称: '六角厚螺母', 规格尺寸: '1/2-13UNC',      材质: 'ASTM A194 2H' },
+  { 零件编号: 'YQFM/J01-02',     零件名称: '上密封座',    规格尺寸: '20/M36x2',        材质: 'ASTM A276 T410' },
+  { 零件编号: 'YQFM/J01-14',     零件名称: '上下填料',    规格尺寸: 'A20x32x6',        材质: '304+柔性石墨编织' },
+  { 零件编号: 'YQFM/J01-03',     零件名称: '填料压套',    规格尺寸: '20x32x23',        材质: 'ASTM A276 T410' },
+  { 零件编号: 'YQFM/J01-04',     零件名称: '填料压板',    规格尺寸: '20/100/75/16',    材质: 'ASTM A105N' },
+  { 零件编号: 'GB/T119.1-2000',  零件名称: '圆柱销',      规格尺寸: 'B8x30',           材质: 'GB/T699,35' },
+  { 零件编号: 'YQFM/J01-16',     零件名称: '活节螺栓',    规格尺寸: '3/8-16x55NUC',   材质: 'ASTM A193 B7' },
+  { 零件编号: 'GB/T97.1-2002',   零件名称: '平垫圈',      规格尺寸: '10',              材质: 'GB/T699,25' },
+  { 零件编号: 'YQFM/J01-06',     零件名称: '阀杆螺母',    规格尺寸: 'A20x4/L68/D36/□32', 材质: 'GB/T1176,ZCuAl10Fe3' },
+  { 零件编号: 'JB/T7940.1-1995', 零件名称: '油杯',        规格尺寸: 'M10x1',           材质: '组合件' },
+  { 零件编号: 'YQFM/J01-08',     零件名称: '螺母压盖',    规格尺寸: 'M48x2/36/18+5',  材质: 'GB/T699,25' },
+  { 零件编号: 'YQFM/J01-09',     零件名称: '手轮',        规格尺寸: 'A200/□32/20',     材质: 'GB/T9940,KTH330-08' },
+  { 零件编号: 'YQFM/J01-11',     零件名称: '锁紧螺母',    规格尺寸: 'M30x1.5/8',       材质: 'GB/T699,25' },
+  { 零件编号: 'GB/T78-2007',     零件名称: '紧定螺钉',    规格尺寸: 'M5x8',            材质: 'GB/T699,35' },
+  { 零件编号: '2Z40H-300Lb-00',  零件名称: '2-300LB',     规格尺寸: '',               材质: '非王/FMS' },
+  { 零件编号: '2Z40H-300Lb-01',  零件名称: '阀体',        规格尺寸: '',               材质: 'ASTM A216 WCB' },
+  { 零件编号: 'YQFM/J01-01',     零件名称: '缠绕垫片',    规格尺寸: '90x110x3.2',     材质: '304+柔性石墨' },
+  { 零件编号: '2Z40H-300Lb-06',  零件名称: '阀盖',        规格尺寸: '闸板重量',        材质: 'ASTM A216 WCB' },
+  { 零件编号: '2Z40H-600Lb-00',  零件名称: '2-600LB',     规格尺寸: '',               材质: '非王/FMS' },
+  { 零件编号: '2Z40H-600Lb-01',  零件名称: '阀体',        规格尺寸: '',               材质: 'ASTM A216 WCB' },
+  { 零件编号: '2Z40H-600Lb-02',  零件名称: '阀座',        规格尺寸: '',               材质: 'ASTM A105N+D507Mo' },
+  { 零件编号: '2Z40H-600Lb-03',  零件名称: '闸板',        规格尺寸: '',               材质: 'ASTM A216 WCB+D577' },
+  { 零件编号: '2Z40H-600Lb-04',  零件名称: '阀杆',        规格尺寸: '20x325',         材质: 'ASTM A276 T410' },
+  { 零件编号: '2Z40H-600Lb-06',  零件名称: '阀盖',        规格尺寸: '闸板重量',        材质: 'ASTM A216 WCB' },
+  { 零件编号: 'GB/T6175-2016',   零件名称: '六角厚螺母',  规格尺寸: 'M14',             材质: 'ASTM A194 7' },
+  { 零件编号: 'GB/T798-2021',    零件名称: '活节螺栓',    规格尺寸: 'M12x65',          材质: 'ASTM A193 B16' },
+  { 零件编号: '3Z40H-150LbC-00', 零件名称: '3-150LB',     规格尺寸: '',               材质: '非王/FMS' },
+  { 零件编号: '3Z40H-150LbC-01', 零件名称: '阀体',        规格尺寸: '',               材质: 'ASTM A216 WCB' },
+  { 零件编号: '3Z40H-300Lb-02',  零件名称: '阀座',        规格尺寸: '',               材质: 'ASTM A105N+D507Mo' },
+  { 零件编号: '3Z40H-300Lb-03',  零件名称: '闸板',        规格尺寸: '',               材质: 'ASTM A216 WCB+D577' },
+  { 零件编号: '3Z40H-300Lb-04',  零件名称: '阀杆',        规格尺寸: '23x345',         材质: 'ASTM A276 T410' },
+  { 零件编号: '3Z40H-150LbC-05', 零件名称: '包覆垫片',    规格尺寸: '155x102x13x3.2', 材质: '304+柔性石墨' },
+  { 零件编号: '3Z40H-150LbC-06', 零件名称: '阀盖',        规格尺寸: '闸板重量',        材质: 'ASTM A216 WCB' },
+  { 零件编号: '3Z40H-300Lb-00',  零件名称: '3-300LB',     规格尺寸: '',               材质: '非王/FMS' },
+  { 零件编号: '3Z40H-300Lb-01',  零件名称: '阀体',        规格尺寸: '',               材质: 'ASTM A216 WCB' },
+  { 零件编号: '3Z40H-600Lb-00',  零件名称: '3-600LB',     规格尺寸: '',               材质: '非王/FMS' },
+  { 零件编号: '3Z40H-600Lb-01',  零件名称: '阀体',        规格尺寸: '',               材质: 'ASTM A216 WCB' },
+  { 零件编号: '3Z40H-600Lb-02',  零件名称: '阀座',        规格尺寸: '',               材质: 'ASTM A105N+D507Mo' },
+  { 零件编号: '3Z40H-600Lb-03',  零件名称: '闸板',        规格尺寸: '',               材质: 'ASTM A216 WCB+D577' },
+  { 零件编号: '3Z40H-600Lb-04',  零件名称: '阀杆',        规格尺寸: '26x395',         材质: 'ASTM A276 T410' },
+  { 零件编号: '3Z40H-600Lb-06',  零件名称: '阀盖',        规格尺寸: '闸板重量',        材质: 'ASTM A216 WCB' },
+  { 零件编号: '3Z40H-600Lb-07',  零件名称: '填料垫',      规格尺寸: '26x38x19',       材质: 'ASTM A276 T410' },
+]
+
+// ════════════════════════════════════════════════════
+// 小样图模板
+// ════════════════════════════════════════════════════
+
+interface PdfFillField {
+  key: string       // 填充键，如 "客户" "日期" "订单号"
+  label: string     // 显示名称
+  page: number      // PDF页码（1起）
+  x: number         // 距左边距（pt）
+  y: number         // 距底边距（pt）
+  size: number      // 字号
+  coverW?: number   // 遮盖宽度（覆盖原文字用）
+  coverH?: number   // 遮盖高度
+}
+
+interface BOMTemplateRow { 零件: string; 材质: string; 数量: number | string }
+
+interface DrawingTemplate {
+  id: string
+  name: string
+  valve_type: string   // 闸阀/截止阀/止回阀
+  pressure: number     // 150/300/600 ...
+  actuator: string     // 手轮/伞齿轮/电动//
+  dn_min: number
+  dn_max: number
+  pdf_url: string | null
+  pdf_path: string | null
+  pdf_fields: PdfFillField[]
+  version: number
+  created_at: string
+  // 产品模板扩展
+  description?: string        // 自然语言描述，用于语义匹配
+  bom_template?: BOMTemplateRow[] // BOM骨架，{{主体}}等占位符由AI代入
+  rules?: string              // 自然语言约束规则
+  image_url?: string
+}
+
+function matchDrawing(item: QuoteItem, drawings: DrawingTemplate[]): DrawingTemplate | null {
+  return (
+    drawings.find(d =>
+      d.valve_type === item.类型 &&
+      d.pressure === item.压力 &&
+      d.actuator === item.驱动 &&
+      item.DN >= d.dn_min && item.DN <= d.dn_max
+    ) ??
+    drawings.find(d =>
+      d.valve_type === item.类型 &&
+      d.pressure === item.压力 &&
+      item.DN >= d.dn_min && item.DN <= d.dn_max
+    ) ??
+    null
+  )
+}
+
 type PageState =
   | { name: 'dashboard' }
   | { name: 'newQuote' }
   | { name: 'quotes' }
   | { name: 'quoteDetail'; data: Quote }
+  | { name: 'quoteItems' }
   | { name: 'params' }
+  | { name: 'paramLib' }
+  | { name: 'valveParts' }
+  | { name: 'bomList' }
+  | { name: 'drawings' }
   | { name: 'rules' }
+
+// ════════════════════════════════════════════════════
+// VALIDATION
+// ════════════════════════════════════════════════════
+
+type ValidationSeverity = 'error' | 'warning'
+interface ValidationIssue {
+  field: keyof QuoteItem | '_general'
+  message: string
+  severity: ValidationSeverity
+}
+
+const VALID_VALVE_TYPES = ['闸阀', '截止阀', '止回阀']
+const STANDARD_DN_VALUES = [15, 20, 25, 32, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600]
+const VALID_PRESSURE_CLASSES = [150, 300, 600, 800, 900, 1500, 2500]
+const VALID_TRIM_NUMBERS = ['1#','2#','3#','4#','5#','6#','7#','8#','9#','10#','11#','12#','13#','14#','15#','16#','17#','18#']
+
+function validateItem(item: QuoteItem): ValidationIssue[] {
+  const issues: ValidationIssue[] = []
+  const add = (field: ValidationIssue['field'], message: string, severity: ValidationSeverity) =>
+    issues.push({ field, message, severity })
+
+  // 1. 必填字段
+  if (!item.类型)           add('类型', '类型不能为空', 'error')
+  if (!item.DN)             add('DN',   '口径不能为空', 'error')
+  if (!item.压力)           add('压力', '压力等级不能为空', 'error')
+  if (!item.主体)           add('主体', '主体材质不能为空', 'error')
+
+  // 2. 枚举：阀门类型
+  if (item.类型 && !VALID_VALVE_TYPES.includes(item.类型))
+    add('类型', `未知类型"${item.类型}"，应为：${VALID_VALVE_TYPES.join(' / ')}`, 'error')
+
+  // 3. DN 标准口径
+  if (item.DN && !STANDARD_DN_VALUES.includes(item.DN))
+    add('DN', `DN${item.DN} 非标准口径，请确认`, 'warning')
+
+  // 4. 压力等级
+  if (item.压力 && !VALID_PRESSURE_CLASSES.includes(item.压力))
+    add('压力', `${item.压力}LB 非标准压力等级（${VALID_PRESSURE_CLASSES.join('/')}）`, 'error')
+
+  // 5. 逻辑一致性
+  if (item.类型 === '止回阀' && item.阀杆轴 && item.阀杆轴 !== '/')
+    add('阀杆轴', '止回阀无阀杆，阀杆轴应为"/"', 'warning')
+
+  if ((item.压力 === 800 || item.压力 === 900) && item.设计标准 && !item.设计标准.includes('602'))
+    add('设计标准', '800/900LB 通常适用 API 602，请确认设计标准', 'warning')
+
+  // 6. 件号范围（API 标准）
+  const isAPI = !item.设计标准 || item.设计标准.includes('API')
+  if (isAPI && item.件号 && !VALID_TRIM_NUMBERS.includes(item.件号))
+    add('件号', `件号"${item.件号}"超出 API 1#~18# 范围`, 'warning')
+
+  // 7. 件号与阀瓣/阀座材质一致性
+  if (isAPI && item.件号 && VALID_TRIM_NUMBERS.includes(item.件号)) {
+    const 瓣 = (item.阀瓣阀闸 ?? '').toLowerCase()
+    const 座 = (item.阀座 ?? '').toLowerCase()
+    const trimChecks: Record<string, () => boolean> = {
+      '1#':  () => 瓣.includes('13cr') && 座.includes('13cr'),
+      '5#':  () => 瓣.includes('stl')  && 座.includes('stl'),
+      '8#':  () => 瓣.includes('13cr') && 座.includes('stl'),
+      '9#':  () => 瓣.includes('monel') && 座.includes('monel'),
+      '10#': () => 瓣.includes('316') && (座.includes('316') || 座.includes('本体')),
+      '15#': () => (瓣.includes('stl') || 瓣.includes('cf8')) && 座.includes('stl'),
+      '16#': () => 瓣.includes('stl') && 座.includes('stl'),
+    }
+    const check = trimChecks[item.件号]
+    if (check && !check())
+      add('件号', `件号 ${item.件号} 与阀瓣/阀座材质不符，请核对规则表2`, 'warning')
+  }
+
+  return issues
+}
 
 // ════════════════════════════════════════════════════
 // SEED DATA
@@ -268,7 +678,7 @@ function DataTable({ columns, data, onRowClick, rowKey = 'id' }: {
         <tbody>
           {data.map((row, ri) => (
             <tr
-              key={(row[rowKey] as string) ?? ri}
+              key={row[rowKey] != null ? `${row[rowKey]}-${ri}` : ri}
               onClick={() => onRowClick?.(row)}
               style={{ cursor: onRowClick ? 'pointer' : 'default', borderBottom: `1px solid ${C.borderLight}` }}
               onMouseEnter={e => { if (onRowClick) (e.currentTarget as HTMLElement).style.background = '#faf8f5' }}
@@ -289,26 +699,257 @@ function DataTable({ columns, data, onRowClick, rowKey = 'id' }: {
 }
 
 // ════════════════════════════════════════════════════
+// COMBOBOX（可搜索下拉，支持新建）
+// ════════════════════════════════════════════════════
+
+function Combobox({ label, value, onChange, options }: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  options: string[]
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+
+  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()))
+  const canCreate = search.trim() !== '' && !options.some(o => o.toLowerCase() === search.trim().toLowerCase())
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div style={{ fontSize: 10, color: C.textLight, marginBottom: 2 }}>{label}</div>
+      <div
+        onClick={() => { setOpen(true); setSearch('') }}
+        style={{ padding: '5px 8px', border: `1px solid ${open ? C.blue : C.border}`, borderRadius: 4, cursor: 'pointer', fontSize: 12, background: '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center', minWidth: 80 }}
+      >
+        <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value || '—'}</span>
+        <span style={{ color: C.textLight, fontSize: 9, marginLeft: 4, flexShrink: 0 }}>▼</span>
+      </div>
+      {open && (
+        <>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 99 }} onClick={() => { setOpen(false); setSearch('') }} />
+          <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 100, background: '#fff', border: `1px solid ${C.border}`, borderRadius: 6, minWidth: 160, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', marginTop: 2 }}>
+            <input
+              autoFocus
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              onClick={e => e.stopPropagation()}
+              placeholder="搜索..."
+              style={{ width: '100%', padding: '6px 10px', border: 'none', borderBottom: `1px solid ${C.borderLight}`, outline: 'none', fontSize: 12, boxSizing: 'border-box', borderRadius: '6px 6px 0 0' }}
+            />
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              {filtered.map(o => (
+                <div
+                  key={o}
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => { onChange(o); setOpen(false); setSearch('') }}
+                  style={{ padding: '6px 10px', cursor: 'pointer', fontSize: 12, background: o === value ? C.blue + '18' : 'transparent', fontWeight: o === value ? 700 : 400 }}
+                  onMouseEnter={e => { if (o !== value) (e.currentTarget as HTMLElement).style.background = '#f5f5f0' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = o === value ? C.blue + '18' : 'transparent' }}
+                >
+                  {o}
+                </div>
+              ))}
+              {canCreate && (
+                <div
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={() => { onChange(search.trim()); setOpen(false); setSearch('') }}
+                  style={{ padding: '6px 10px', cursor: 'pointer', fontSize: 12, color: C.green, borderTop: `1px solid ${C.borderLight}` }}
+                  onMouseEnter={e => (e.currentTarget as HTMLElement).style.background = '#f0faf5'}
+                  onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = 'transparent'}
+                >
+                  + 新建 &ldquo;{search.trim()}&rdquo;
+                </div>
+              )}
+              {filtered.length === 0 && !canCreate && (
+                <div style={{ padding: 12, fontSize: 12, color: C.textLight, textAlign: 'center' }}>无匹配</div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// 文件 / 图片上传组件
+// ════════════════════════════════════════════════════
+
+function FileDropZone({ accept, hint, file, onFile }: {
+  accept: string; hint: string; file: File | null; onFile: (f: File) => void
+}) {
+  const [dragging, setDragging] = useState(false)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+  const handle = (f: File) => { if (f) onFile(f) }
+  return (
+    <div
+      onDragOver={e => { e.preventDefault(); setDragging(true) }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handle(f) }}
+      onClick={() => inputRef.current?.click()}
+      style={{ border: `2px dashed ${dragging ? C.accent : C.border}`, borderRadius: 8, padding: '32px 20px', textAlign: 'center', cursor: 'pointer', background: dragging ? C.accent + '08' : '#fafaf7', transition: 'all 0.15s' }}
+    >
+      <input ref={inputRef} type="file" accept={accept} style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) handle(f) }} />
+      {file ? (
+        <div>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>📎</div>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>{file.name}</div>
+          <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{(file.size / 1024).toFixed(0)} KB · 点击重新选择</div>
+        </div>
+      ) : (
+        <div>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>⬆</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>拖拽文件到此处，或点击选择</div>
+          <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>{hint}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ImageDropZone({ preview, onImage }: {
+  preview: string | null; onImage: (b64: string, mime: string, preview: string) => void
+}) {
+  const [dragging, setDragging] = useState(false)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const processFile = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = e => {
+      const dataUrl = e.target?.result as string
+      const [header, b64] = dataUrl.split(',')
+      const mime = header.match(/:(.*?);/)?.[1] ?? 'image/png'
+      onImage(b64, mime, dataUrl)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handlePaste = useCallback((e: ClipboardEvent) => {
+    const item = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith('image/'))
+    if (item) { e.preventDefault(); const f = item.getAsFile(); if (f) processFile(f) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    document.addEventListener('paste', handlePaste)
+    return () => document.removeEventListener('paste', handlePaste)
+  }, [handlePaste])
+
+  return (
+    <div>
+      <div
+        onDragOver={e => { e.preventDefault(); setDragging(true) }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f?.type.startsWith('image/')) processFile(f) }}
+        onClick={() => !preview && inputRef.current?.click()}
+        style={{ border: `2px dashed ${dragging ? C.accent : C.border}`, borderRadius: 8, padding: preview ? 8 : '32px 20px', textAlign: 'center', cursor: preview ? 'default' : 'pointer', background: dragging ? C.accent + '08' : '#fafaf7', transition: 'all 0.15s' }}
+      >
+        <input ref={inputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => { const f = e.target.files?.[0]; if (f) processFile(f) }} />
+        {preview ? (
+          <div style={{ position: 'relative' }}>
+            <img src={preview} alt="preview" style={{ maxHeight: 260, maxWidth: '100%', borderRadius: 4, objectFit: 'contain' }} />
+            <button onClick={() => inputRef.current?.click()} style={{ position: 'absolute', top: 6, right: 6, padding: '3px 8px', background: 'rgba(0,0,0,0.5)', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>重新选择</button>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🖼</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>拖拽图片、点击选择，或 Ctrl+V 粘贴截图</div>
+            <div style={{ fontSize: 12, color: C.textDim, marginTop: 6 }}>支持 PNG / JPG / WebP · 可直接粘贴屏幕截图</div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
 // PAGE: 新建报价（核心三步流程）
 // ════════════════════════════════════════════════════
 
-function PageNewQuote({ params, setQuotes, setPage }: {
+function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams, setParamLib, setPage, 业务员 }: {
   params: Param[]
+  quotes: Quote[]
+  paramLib: ParamLibrary
+  drawings: DrawingTemplate[]
   setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
+  setParams: React.Dispatch<React.SetStateAction<Param[]>>
+  setParamLib: React.Dispatch<React.SetStateAction<ParamLibrary>>
   setPage: (p: PageState) => void
+  业务员: string
 }) {
   const [step, setStep] = useState(0)
   const [input, setInput] = useState('')
+  const [inputMode, setInputMode] = useState<'text' | 'excel' | 'pdf' | 'image'>('text')
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [imageBase64, setImageBase64] = useState<string | null>(null)
+  const [imageMime, setImageMime] = useState<string>('image/png')
   const [loading, setLoading] = useState(false)
+  const [progress, setProgress] = useState<{ pct: number; label: string } | null>(null)
   const [extracted, setExtracted] = useState<QuoteItem[] | null>(null)
   const [bomResults, setBomResults] = useState<BOMResult[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [editingIdx, setEditingIdx] = useState<number | null>(null)
+  const [editValues, setEditValues] = useState<QuoteItem | null>(null)
+  const [bomEditIdx, setBomEditIdx] = useState<number | null>(null)
+  const [bomEditRows, setBomEditRows] = useState<BOMRow[] | null>(null)
+  const [saveForm, setSaveForm] = useState({ 客户: '', 联系人: '', 交期: '' })
+  useEffect(() => {
+    setSaveForm(prev => prev.交期 ? prev : { ...prev, 交期: new Date().toISOString().slice(0, 10) })
+  }, [])
 
-  const callAI = async (skill: string, userMsg: string): Promise<string> => {
+  const getFieldOptions = (field: string): string[] => {
+    const libKey = field as keyof ParamLibrary
+    if (paramLib[libKey]?.length) return paramLib[libKey]
+    return [...new Set(params.map(p => String((p as unknown as Record<string, unknown>)[field] ?? '')).filter(Boolean))].sort()
+  }
+
+  const getMaterialOptions = (): string[] => {
+    const fromBom = bomResults?.flatMap(r => r.bom.map(row => row.材质)) ?? []
+    const base = [
+      'A216 WCB', 'A105', 'A217 WC6', 'A351 CF8', 'A351 CF8M', 'A351 CF3', 'LCB', 'LF2',
+      'A105+13Cr', 'A105+STL', 'WCB+13Cr', 'WCB+STL', 'CF8+STL',
+      'A276 T410 (F6a)', '12Cr13', 'F304', 'F304L', 'F316', 'F316L', 'Monel',
+      'A193 B7', 'A193 B16', 'A320 B8', 'A193 B8M', 'A320-L7',
+      'A194 2H', 'A194-4', 'A194-8', 'A194-8M',
+      '304+柔性石墨', '316+柔性石墨', '柔性石墨+缠绕填料',
+      'ZQAL9-4', 'KTH350-10', '20号钢',
+    ]
+    return [...new Set([...fromBom, ...base])].filter(Boolean).sort()
+  }
+
+  const startBomEdit = (idx: number) => {
+    setBomEditIdx(idx)
+    setBomEditRows(bomResults![idx].bom.map(r => ({ ...r, 数量: r.数量 ?? 1 })))
+  }
+  const saveBomEdit = () => {
+    if (bomEditIdx === null || !bomEditRows) return
+    setBomResults(prev => {
+      if (!prev) return prev
+      const next = [...prev]
+      next[bomEditIdx] = { ...next[bomEditIdx], bom: bomEditRows }
+      return next
+    })
+    setBomEditIdx(null); setBomEditRows(null)
+  }
+  const cancelBomEdit = () => { setBomEditIdx(null); setBomEditRows(null) }
+
+  const startEdit = (idx: number) => {
+    setEditingIdx(idx)
+    setEditValues({ ...extracted![idx] })
+  }
+  const saveEdit = (idx: number) => {
+    if (!editValues || !extracted) return
+    const next = [...extracted]; next[idx] = editValues
+    setExtracted(next); setEditingIdx(null); setEditValues(null)
+  }
+  const cancelEdit = () => { setEditingIdx(null); setEditValues(null) }
+
+  const callAI = async (skill: string, userMsg: string, opts?: { imageBase64?: string; imageMime?: string }): Promise<string> => {
     const res = await fetch('/api/claude', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skill, message: userMsg }),
+      body: JSON.stringify({ skill, message: userMsg, ...opts }),
     })
     const data = await res.json()
     if (data.error) throw new Error(data.error)
@@ -316,51 +957,243 @@ function PageNewQuote({ params, setQuotes, setPage }: {
   }
 
   const parseJSON = (text: string) => {
-    const clean = text.replace(/```json|```/g, '').trim()
-    const match = clean.match(/\{[\s\S]*\}/)
-    return match ? JSON.parse(match[0]) : null
+    // 去掉 markdown 代码块标记
+    const clean = text.replace(/```[\w]*/g, '').replace(/```/g, '').trim()
+    // 找到最外层的 { ... }
+    const start = clean.indexOf('{')
+    const end = clean.lastIndexOf('}')
+    if (start === -1 || end === -1 || end <= start) return null
+    try {
+      return JSON.parse(clean.slice(start, end + 1))
+    } catch {
+      // 尝试修复尾部截断：去掉最后一个不完整的 item
+      const truncated = clean.slice(start, end + 1)
+      const lastComma = truncated.lastIndexOf(',')
+      if (lastComma > 0) {
+        try { return JSON.parse(truncated.slice(0, lastComma) + ']}') } catch { /* ignore */ }
+      }
+      return null
+    }
   }
 
   const handleExtract = async () => {
-    if (!input.trim()) return
     setLoading(true); setError(null)
+    // 动画假进度（单次 AI 调用，无法知道真实进度）
+    setProgress({ pct: 5, label: '发送请求…' })
+    const fakeTimer = setInterval(() => {
+      setProgress(prev => {
+        if (!prev || prev.pct >= 85) return prev
+        const next = prev.pct < 30 ? prev.pct + 8
+                   : prev.pct < 60 ? prev.pct + 4
+                   : prev.pct + 1
+        const labels: Record<number, string> = { 30: 'AI 理解需求…', 60: '识别阀门参数…', 80: '整理结果…' }
+        return { pct: Math.min(next, 85), label: labels[Math.ceil(next / 10) * 10] ?? prev.label }
+      })
+    }, 400)
     try {
-      const raw = await callAI('param-extract', input)
+      let raw = ''
+
+      if (inputMode === 'text') {
+        if (!input.trim()) { setError('请输入客户需求'); setLoading(false); clearInterval(fakeTimer); setProgress(null); return }
+        raw = await callAI('param-extract', input)
+
+      } else if (inputMode === 'excel') {
+        if (!uploadFile) { setError('请先选择 Excel 文件'); setLoading(false); clearInterval(fakeTimer); setProgress(null); return }
+        setProgress({ pct: 15, label: '解析 Excel…' })
+        const { read, utils } = await import('xlsx')
+        const buf = await uploadFile.arrayBuffer()
+        const wb = read(buf, { type: 'array' })
+        const rows: string[] = []
+        wb.SheetNames.forEach(name => {
+          const csv = utils.sheet_to_csv(wb.Sheets[name])
+          if (csv.trim()) rows.push(`[Sheet: ${name}]\n${csv}`)
+        })
+        const text = rows.join('\n\n')
+        setInput(text)
+        raw = await callAI('param-extract', text)
+
+      } else if (inputMode === 'pdf') {
+        if (!uploadFile) { setError('请先选择 PDF 文件'); setLoading(false); clearInterval(fakeTimer); setProgress(null); return }
+        setProgress({ pct: 15, label: '上传 PDF…' })
+        const form = new FormData(); form.append('file', uploadFile)
+        const res = await fetch('/api/upload', { method: 'POST', body: form })
+        const data = await res.json()
+        if (data.error) throw new Error(data.error)
+        setInput(data.text)
+        setProgress({ pct: 40, label: 'AI 分析文档…' })
+        raw = await callAI('param-extract', data.text)
+
+      } else if (inputMode === 'image') {
+        if (!imageBase64) { setError('请先选择或粘贴图片'); setLoading(false); clearInterval(fakeTimer); setProgress(null); return }
+        setProgress({ pct: 20, label: 'AI 识别图片…' })
+        raw = await callAI('param-extract', '请从图片中识别所有阀门参数，严格按JSON格式输出。', { imageBase64, imageMime })
+      }
+
+      clearInterval(fakeTimer)
+      setProgress({ pct: 100, label: '完成！' })
       const parsed = parseJSON(raw)
       if (parsed?.items) { setExtracted(parsed.items); setStep(1) }
       else setError('AI 返回格式异常，请重试或换种描述方式')
-    } catch (e) { setError('请求失败: ' + (e as Error).message) }
+    } catch (e) {
+      clearInterval(fakeTimer)
+      setError('请求失败: ' + (e as Error).message)
+    }
     setLoading(false)
+    setTimeout(() => setProgress(null), 600)
+  }
+
+  // 两级历史BOM查询
+  const findHistoricalBOM = (item: QuoteItem) => {
+    const exactKey = (q: QuoteItem) => `${q.类型}|${q.DN}|${q.压力}|${q.主体}|${q.件号}`
+    const fuzzyKey = (q: QuoteItem) => `${q.类型}|${q.主体}|${q.件号}`
+
+    type HitItem = { bom: BOMRow[]; 牌1: string; 牌2: string; qi: QuoteItem }
+    const exactHits: HitItem[] = []
+    const fuzzyHits: HitItem[] = []
+
+    for (const q of quotes) {
+      if (!q.bomData) continue
+      q.items.forEach((qi, idx) => {
+        if (!q.bomData![idx]?.bom?.length) return
+        const entry = { bom: q.bomData![idx].bom, 牌1: q.bomData![idx].牌1, 牌2: q.bomData![idx].牌2, qi }
+        if (exactKey(qi) === exactKey(item)) exactHits.push(entry)
+        else if (fuzzyKey(qi) === fuzzyKey(item)) fuzzyHits.push(entry)
+      })
+    }
+
+    if (exactHits.length > 0) {
+      return { ...exactHits[0], count: exactHits.length, level: 'exact' as const, diffFields: [] }
+    }
+    if (fuzzyHits.length > 0) {
+      const src = fuzzyHits[0].qi
+      const diff: string[] = []
+      if (src.DN !== item.DN) diff.push(`DN${src.DN}→DN${item.DN}`)
+      if (src.压力 !== item.压力) diff.push(`${src.压力}→${item.压力}LB`)
+      return { ...fuzzyHits[0], count: fuzzyHits.length, level: 'fuzzy' as const, diffFields: diff }
+    }
+    return null
   }
 
   const handleGenBOM = async () => {
     if (!extracted) return
     setLoading(true); setError(null)
+    const total = extracted.length
     try {
       const results: BOMResult[] = []
-      for (const item of extracted) {
-        const raw = await callAI('bom-generate', JSON.stringify(item))
+      for (let i = 0; i < extracted.length; i++) {
+        const item = extracted[i]
+        const label = `第 ${i + 1}/${total} 条：${item.类型} DN${item.DN}`
+        setProgress({ pct: Math.round((i / total) * 90), label })
+        // Step 1：精确匹配 / 模糊匹配
+        const hist = findHistoricalBOM(item)
+        if (hist) {
+          results.push({
+            item, bom: hist.bom, 牌1: hist.牌1, 牌2: hist.牌2,
+            来源: hist.level, 历史次数: hist.count, 差异字段: hist.diffFields,
+          })
+          setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}（历史匹配）` })
+          continue
+        }
+        // Step 2：匹配产品模板骨架（有则带骨架调 AI，无则 AI 从零生成）
+        const tpl = matchDrawing(item, drawings)
+        const aiPayload: Record<string, unknown> = { ...item }
+        if (tpl?.bom_template?.length) {
+          aiPayload.bom_template = tpl.bom_template
+          aiPayload.template_name = tpl.name
+          if (tpl.rules) aiPayload.template_rules = tpl.rules
+        }
+        if (i > 0) await new Promise(r => setTimeout(r, 800))
+        const src = tpl?.bom_template?.length ? `模板「${tpl.name}」` : 'AI 从零生成'
+        setProgress({ pct: Math.round((i / total) * 90) + 5, label: `${src}：${item.类型} DN${item.DN} ${item.主体}…` })
+        const raw = await callAI('bom-generate', JSON.stringify(aiPayload))
         const parsed = parseJSON(raw)
-        results.push({ item, bom: parsed?.bom || [], 牌1: parsed?.牌1 || '', 牌2: parsed?.牌2 || '' })
+        results.push({
+          item, bom: parsed?.bom || [], 牌1: parsed?.牌1 || '', 牌2: parsed?.牌2 || '',
+          来源: tpl?.bom_template?.length ? 'template' : 'ai',
+        })
+        setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}` })
       }
+      setProgress({ pct: 100, label: `全部完成，共 ${total} 条` })
       setBomResults(results); setStep(2)
     } catch (e) { setError('BOM 生成失败: ' + (e as Error).message) }
     setLoading(false)
+    setTimeout(() => setProgress(null), 800)
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!extracted || !bomResults) return
     const newQuote: Quote = {
       id: 'q' + Date.now(),
-      客户: '新客户',
+      客户: saveForm.客户 || '新客户',
+      联系人: saveForm.联系人 || undefined,
       订单号: 'Q' + new Date().toISOString().slice(2, 10).replace(/-/g, ''),
       日期: new Date().toISOString().slice(0, 10),
+      交期: saveForm.交期 || undefined,
       状态: '草稿',
       台计: extracted.reduce((s, i) => s + (i.数量 || 1), 0),
+      原始需求: input,
       items: extracted.map(i => ({ ...i, 规格: i.工厂编号 || '' })),
       bomData: bomResults,
     }
+
+    // 计算新 params（命中则 +1，未找到则新增）
+    const nextParams = [...params]
+    const upsertRows: Param[] = []
+    for (const item of extracted) {
+      const idx = nextParams.findIndex(p =>
+        p.类型 === item.类型 && p.DN === item.DN && p.压力 === item.压力 &&
+        p.主体 === item.主体 && p.件号 === item.件号
+      )
+      if (idx >= 0) {
+        nextParams[idx] = { ...nextParams[idx], 次数: nextParams[idx].次数 + 1, 数量: nextParams[idx].数量 + (item.数量 || 1) }
+        upsertRows.push(nextParams[idx])
+      } else {
+        const newParam: Param = {
+          id: 'p' + Date.now() + Math.random().toString(36).slice(2),
+          类型: item.类型, DN: item.DN, 压力: item.压力,
+          驱动: item.驱动 || '', 连接: item.连接 || '',
+          主体: item.主体, 阀瓣阀闸: item.阀瓣阀闸 || '',
+          阀座: item.阀座 || '', 阀杆轴: item.阀杆轴 || '',
+          螺柱: item.螺柱 || '', 中腔填料: item.中腔填料 || '',
+          设计标准: item.设计标准 || 'API 600', 件号: item.件号 || '',
+          次数: 1, 数量: item.数量 || 1,
+        }
+        nextParams.push(newParam)
+        upsertRows.push(newParam)
+      }
+    }
+
+    // 持久化到 Supabase
+    const [qRes, pRes] = await Promise.all([
+      supabase.from('quotes').insert({ id: newQuote.id, salesperson: 业务员, data: newQuote }),
+      supabase.from('params').upsert(upsertRows.map(p => ({ id: p.id, data: p, updated_at: new Date().toISOString() }))),
+    ])
+    if (qRes.error) {
+      console.error('[handleSave] quotes insert error:', qRes.error)
+      setError('报价单保存失败: ' + qRes.error.message)
+      return
+    }
+    if (pRes.error) console.warn('[handleSave] params upsert error:', pRes.error)
+
+    // 更新本地状态
     setQuotes(prev => [newQuote, ...prev])
+    setParams(nextParams)
+    setParamLib(prev => {
+      const next = { ...prev } as ParamLibrary
+      for (const item of extracted) {
+        const updates: Partial<Record<keyof ParamLibrary, string>> = {
+          类型: item.类型, DN: String(item.DN), 压力: String(item.压力),
+          主体: item.主体, 阀瓣阀闸: item.阀瓣阀闸, 阀座: item.阀座,
+          阀杆轴: item.阀杆轴, 螺柱: item.螺柱, 中腔填料: item.中腔填料,
+          件号: item.件号,
+        }
+        for (const [k, v] of Object.entries(updates) as [keyof ParamLibrary, string][]) {
+          if (v && !next[k].includes(v)) next[k] = [...next[k], v].sort()
+        }
+      }
+      return next
+    })
+
     setPage({ name: 'quoteDetail', data: newQuote })
   }
 
@@ -382,31 +1215,128 @@ function PageNewQuote({ params, setQuotes, setPage }: {
 
       {/* Step 0: 输入 */}
       {step === 0 && (
-        <Card title="客户需求输入" extra={<span style={{ fontSize: 12, color: C.textDim }}>支持自然语言、阀门编码、五环TAG</span>}>
-          <textarea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder={'输入示例：\n• 客户要4寸300磅碳钢闸阀，哈斯特加硬，6只\n• Z61H-800LbC-25\n• 4" RF Z2A3A05-P2G3\n• 闸阀DN100 150LB WCB 件号8# ×4只\n  截止阀DN80 150LB WCB 件号8# ×2只'}
-            style={{ width: '100%', minHeight: 140, padding: 12, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 14, fontFamily: 'inherit', resize: 'vertical', outline: 'none', lineHeight: 1.7 }}
-          />
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-            {['闸阀 4寸 300磅 碳钢 哈斯特加硬 4只', 'Z61H-800LbC-25 2只', '4" RF Z2A3A05-P2G3', 'DN100 150LB WCB 8#件号 闸阀×6 截止阀×2'].map(ex => (
-              <button key={ex} onClick={() => setInput(ex)} style={{ padding: '4px 10px', border: `1px solid ${C.border}`, borderRadius: 4, background: '#fff', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', color: C.textDim }}>{ex}</button>
+        <Card title="客户需求输入">
+          {/* Tab 选择器 */}
+          <div style={{ display: 'flex', gap: 0, borderBottom: `2px solid ${C.border}`, marginBottom: 16 }}>
+            {([
+              { mode: 'text',  icon: '📝', label: '文字输入' },
+              { mode: 'excel', icon: '📊', label: 'Excel' },
+              { mode: 'pdf',   icon: '📄', label: 'PDF' },
+              { mode: 'image', icon: '🖼', label: '图片/截图' },
+            ] as const).map(t => (
+              <div
+                key={t.mode}
+                onClick={() => { setInputMode(t.mode); setError(null) }}
+                style={{
+                  padding: '8px 16px', cursor: 'pointer', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5,
+                  fontWeight: inputMode === t.mode ? 700 : 400,
+                  color: inputMode === t.mode ? C.accent : C.textDim,
+                  borderBottom: inputMode === t.mode ? `2px solid ${C.accent}` : '2px solid transparent',
+                  marginBottom: -2,
+                }}
+              >{t.icon} {t.label}</div>
             ))}
           </div>
-          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
-            <Btn onClick={handleExtract} disabled={loading || !input.trim()}>{loading ? 'AI 提取中...' : '提取参数 →'}</Btn>
+
+          {/* 文字输入 */}
+          {inputMode === 'text' && (
+            <>
+              <textarea
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                placeholder={'输入示例：\n• 客户要4寸300磅碳钢闸阀，哈斯特加硬，6只\n• Z61H-800LbC-25\n• 4" RF Z2A3A05-P2G3\n• A216-WCB DISC:STLT SEAT:STLT STEM:13Cr CL600 RJ API600 ×8只\n• 闸阀DN100 150LB WCB 件号8# ×4只  截止阀DN80 150LB WCB 件号8# ×2只'}
+                style={{ width: '100%', minHeight: 140, padding: 12, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, fontFamily: 'inherit', resize: 'vertical', outline: 'none', lineHeight: 1.7, boxSizing: 'border-box' }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                {['闸阀 4寸 300磅 碳钢 哈斯特加硬 4只', 'Z61H-800LbC-25 2只', 'DN80 A216-WCB DISC:STLT SEAT:STLT STEM:13Cr CL600 RJ API600 ×8', 'DN100 150LB WCB 8#件号 闸阀×6 截止阀×2'].map(ex => (
+                  <button key={ex} onClick={() => setInput(ex)} style={{ padding: '4px 10px', border: `1px solid ${C.border}`, borderRadius: 4, background: '#fff', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', color: C.textDim }}>{ex}</button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {/* Excel 上传 */}
+          {inputMode === 'excel' && (
+            <FileDropZone
+              accept=".xlsx,.xls,.csv"
+              hint="支持 .xlsx / .xls / .csv"
+              file={uploadFile}
+              onFile={f => { setUploadFile(f); setError(null) }}
+            />
+          )}
+
+          {/* PDF 上传 */}
+          {inputMode === 'pdf' && (
+            <FileDropZone
+              accept=".pdf"
+              hint="支持 .pdf — 上传后由 AI 提取文字内容"
+              file={uploadFile}
+              onFile={f => { setUploadFile(f); setError(null) }}
+            />
+          )}
+
+          {/* 图片/截图 */}
+          {inputMode === 'image' && (
+            <ImageDropZone
+              preview={imagePreview}
+              onImage={(b64, mime, preview) => { setImageBase64(b64); setImageMime(mime); setImagePreview(preview); setError(null) }}
+            />
+          )}
+
+          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12, color: C.textDim }}>
+              { inputMode === 'text'  && '自然语言 · 阀门编号 · 五环编码 · 工程院格式' }
+              { inputMode === 'excel' && 'AI 解析表格中的阀门规格行' }
+              { inputMode === 'pdf'   && 'AI 提取 PDF 中的设备材料规格表' }
+              { inputMode === 'image' && 'AI 视觉识别图片中的阀门参数' }
+            </span>
+            <Btn onClick={handleExtract} disabled={loading}>
+              {loading ? 'AI 处理中...' : '提取参数 →'}
+            </Btn>
           </div>
+          {progress && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textDim, marginBottom: 5 }}>
+                <span>{progress.label}</span>
+                <span>{progress.pct}%</span>
+              </div>
+              <div style={{ height: 6, background: C.border, borderRadius: 99, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${progress.pct}%`, background: progress.pct === 100 ? C.green : C.accent, borderRadius: 99, transition: 'width 0.35s ease' }} />
+              </div>
+            </div>
+          )}
         </Card>
       )}
 
       {/* Step 1: 确认参数 */}
       {step === 1 && extracted && (
-        <Card title={`参数提取结果（${extracted.length} 行）`} extra={<Btn variant="ghost" small onClick={() => { setStep(0); setExtracted(null) }}>← 重新输入</Btn>}>
+        <Card
+          title={`参数提取结果（${extracted.length} 行）`}
+          extra={<Btn variant="ghost" small onClick={() => { setStep(0); setExtracted(null) }}>← 重新输入</Btn>}
+        >
           {extracted.map((item, idx) => {
             const match = findMatch(item)
+            const isEditing = editingIdx === idx
+            const ev = editValues!
+
+            // 3行3列 + 件号（API标准时显示）
+            const isAPI = !item.设计标准 || item.设计标准.includes('API')
+            const FIELDS: [string, keyof QuoteItem][] = [
+              ['类型', '类型'], ['DN', 'DN'], ['压力', '压力'],
+              ['主体', '主体'], ['阀瓣/阀闸', '阀瓣阀闸'], ['阀座', '阀座'],
+              ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'], ['填料', '中腔填料'],
+              ...(isAPI ? [['件号 (API)', '件号'] as [string, keyof QuoteItem]] : []),
+            ]
+            const NUMERIC_FIELDS = ['DN', '压力', '数量']
+
+            const issues = validateItem(item)
+            const issueMap = Object.fromEntries(issues.map(i => [i.field, i])) as Record<string, ValidationIssue>
+            const errCount  = issues.filter(i => i.severity === 'error').length
+            const warnCount = issues.filter(i => i.severity === 'warning').length
+
             return (
-              <div key={idx} style={{ padding: 12, marginBottom: 10, background: '#fafaf7', borderRadius: 6, border: `1px solid ${C.borderLight}` }}>
+              <div key={idx} style={{ padding: 12, marginBottom: 10, background: isEditing ? '#fff8f4' : '#fafaf7', borderRadius: 6, border: `1px solid ${errCount > 0 ? C.accent + '80' : isEditing ? C.accent + '60' : C.borderLight}` }}>
+                {/* 行头 */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
                   <span style={{ fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>DN{item.DN} {item.压力}LB</span>
@@ -414,54 +1344,203 @@ function PageNewQuote({ params, setQuotes, setPage }: {
                   <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.blue }}>{item.工厂编号}</span>
                   <div style={{ flex: 1 }} />
                   {match ? <Tag color={C.green}>✓ 历史匹配 ×{match.次数}次</Tag> : <Tag color={C.amber}>首次配置</Tag>}
-                  <Tag color={C.blue}>件号{item.件号}</Tag>
+                  {errCount  > 0 && <Tag color={C.accent}>{errCount} 个错误</Tag>}
+                  {warnCount > 0 && <Tag color={C.amber}>{warnCount} 个警告</Tag>}
+                  {!isEditing && (
+                    <Btn variant="ghost" small onClick={() => startEdit(idx)}>修改</Btn>
+                  )}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 6, fontSize: 12 }}>
-                  {([['主体', item.主体], ['阀瓣/阀闸', item.阀瓣阀闸], ['阀座', item.阀座], ['阀杆/轴', item.阀杆轴], ['螺柱', item.螺柱], ['填料', item.中腔填料]] as [string, string][]).map(([k, v]) => (
-                    <div key={k} style={{ background: '#fff', padding: '4px 8px', borderRadius: 4, border: `1px solid ${C.borderLight}` }}>
-                      <div style={{ fontSize: 10, color: C.textLight }}>{k}</div>
-                      <div style={{ fontWeight: 600 }}>{v}</div>
+
+                {isEditing ? (
+                  /* ── 编辑模式：Combobox 网格，有问题的字段标签加图标 ── */
+                  <div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 10 }}>
+                      {FIELDS.map(([label, field]) => {
+                        const fi = issueMap[field]
+                        const prefix = fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''
+                        return (
+                          <Combobox
+                            key={field}
+                            label={`${prefix}${label}`}
+                            value={String(ev[field] ?? '')}
+                            onChange={v => setEditValues(prev => prev ? {
+                              ...prev,
+                              [field]: NUMERIC_FIELDS.includes(field) ? Number(v) : v
+                            } : prev)}
+                            options={getFieldOptions(field)}
+                          />
+                        )
+                      })}
                     </div>
-                  ))}
-                </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                      <Btn variant="ghost" small onClick={cancelEdit}>取消</Btn>
+                      <Btn small onClick={() => saveEdit(idx)}>保存</Btn>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── 查看模式：字段格高亮错误/警告 ── */
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
+                    {FIELDS.map(([label, field]) => {
+                      const fi = issueMap[field]
+                      const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : '#fff'
+                      const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : C.borderLight
+                      const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : C.textLight
+                      return (
+                        <div key={field} style={{ background: bg, padding: '4px 8px', borderRadius: 4, border: `1px solid ${border}` }}>
+                          <div style={{ fontSize: 10, color: lc }}>{fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''}{label}</div>
+                          <div style={{ fontWeight: 600 }}>{String(item[field] || '—')}</div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* 问题列表 */}
+                {issues.length > 0 && (
+                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {issues.map((issue, i) => (
+                      <div key={i} style={{ fontSize: 11, color: issue.severity === 'error' ? C.accent : C.amber, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <span>{issue.severity === 'error' ? '✕' : '⚠'}</span>
+                        <span>{issue.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {item.待确认 && item.待确认.length > 0 && (
-                  <div style={{ marginTop: 6, fontSize: 12, color: C.amber }}>⚠ 待确认: {item.待确认.join(', ')}</div>
+                  <div style={{ marginTop: 6, fontSize: 12, color: C.amber }}>⚠ AI待确认: {item.待确认.join(', ')}</div>
                 )}
               </div>
             )
           })}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
-            <Btn variant="ghost" onClick={() => { setStep(0); setExtracted(null) }}>修改</Btn>
-            <Btn onClick={handleGenBOM} disabled={loading}>{loading ? '生成BOM中...' : '确认参数，生成BOM →'}</Btn>
-          </div>
+          {(() => {
+            const hasErrors = extracted.some(item => validateItem(item).some(i => i.severity === 'error'))
+            const totalErrors = extracted.reduce((n, item) => n + validateItem(item).filter(i => i.severity === 'error').length, 0)
+            return (
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                {hasErrors && (
+                  <span style={{ fontSize: 12, color: C.accent }}>请修正 {totalErrors} 个错误后再生成 BOM</span>
+                )}
+                <Btn onClick={handleGenBOM} disabled={loading || editingIdx !== null || hasErrors}>
+                  {loading ? '生成BOM中...' : '确认参数，生成BOM →'}
+                </Btn>
+              </div>
+            )
+          })()}
+          {progress && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textDim, marginBottom: 5 }}>
+                <span>{progress.label}</span>
+                <span>{progress.pct}%</span>
+              </div>
+              <div style={{ height: 6, background: C.border, borderRadius: 99, overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${progress.pct}%`, background: progress.pct === 100 ? C.green : C.accent, borderRadius: 99, transition: 'width 0.35s ease' }} />
+              </div>
+            </div>
+          )}
         </Card>
       )}
 
       {/* Step 2: BOM 结果 */}
       {step === 2 && bomResults && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {bomResults.map((r, idx) => (
-            <Card
-              key={idx}
-              title={<span><Tag color={C.tag[r.item.类型] ?? C.blue}>{r.item.类型}</Tag><span style={{ marginLeft: 8 }}>DN{r.item.DN} {r.item.压力}LB {r.item.主体} · 件号{r.item.件号}</span></span>}
-              extra={<span style={{ fontSize: 12, color: C.textDim }}>牌1: {r.牌1} | 牌2: {r.牌2}</span>}
-            >
-              <DataTable
-                columns={[
-                  { title: '#', key: '序号', render: v => <span style={{ fontFamily: "'DM Mono',monospace", color: C.textDim }}>{v as number}</span> },
-                  { title: '零件', key: '零件', render: v => <span style={{ fontWeight: 600 }}>{v as string}</span> },
-                  { title: '材质', key: '材质', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
-                  { title: '来源', key: '来源', render: v => <Tag color={(v as string)?.includes('牌1') ? C.blue : (v as string)?.includes('牌2') ? C.amber : C.textLight}>{v as string}</Tag> },
-                ]}
-                data={r.bom as unknown as Record<string, unknown>[]}
-                rowKey="序号"
-              />
-            </Card>
-          ))}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Btn variant="ghost" onClick={() => { setStep(1); setBomResults(null) }}>← 修改参数</Btn>
-            <Btn onClick={handleSave}>保存为报价单</Btn>
-          </div>
+          {bomResults.map((r, idx) => {
+            const isEditingBom = bomEditIdx === idx
+            const rows = isEditingBom ? bomEditRows! : r.bom.map(row => ({ ...row, 数量: row.数量 ?? 1 }))
+            return (
+              <Card
+                key={idx}
+                title={<span><Tag color={C.tag[r.item.类型] ?? C.blue}>{r.item.类型}</Tag><span style={{ marginLeft: 8 }}>DN{r.item.DN} {r.item.压力}LB {r.item.主体} · 件号{r.item.件号}</span></span>}
+                extra={
+                  isEditingBom ? (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <Btn variant="ghost" small onClick={cancelBomEdit}>取消</Btn>
+                      <Btn small onClick={saveBomEdit}>保存</Btn>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, color: C.textDim }}>牌1: {r.牌1} | 牌2: {r.牌2}</span>
+                      {r.来源 === 'exact' && <Tag color={C.green}>✓ 精确匹配 ×{r.历史次数}次</Tag>}
+                      {r.来源 === 'fuzzy' && (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Tag color={C.amber}>≈ 相近配置 ×{r.历史次数}次</Tag>
+                          {r.差异字段 && r.差异字段.length > 0 && (
+                            <span style={{ fontSize: 11, color: C.amber }}>({r.差异字段.join('、')})</span>
+                          )}
+                        </span>
+                      )}
+                      {r.来源 === 'ai' && <Tag color={C.blue}>AI 生成</Tag>}
+                      <Btn variant="ghost" small onClick={() => startBomEdit(idx)}>修改</Btn>
+                    </div>
+                  )
+                }
+              >
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr>
+                        {['#', '零件', '材质', '数量', '来源'].map(h => (
+                          <th key={h} style={{ padding: '7px 10px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((row, ri) => (
+                        <tr key={ri} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
+                          <td style={{ padding: '6px 10px', color: C.textDim, fontFamily: "'DM Mono',monospace" }}>{row.序号}</td>
+                          <td style={{ padding: '6px 10px', fontWeight: 600 }}>{row.零件}</td>
+                          <td style={{ padding: '6px 10px', minWidth: isEditingBom ? 180 : 'auto' }}>
+                            {isEditingBom ? (
+                              <Combobox label="" value={row.材质} options={getMaterialOptions()}
+                                onChange={v => setBomEditRows(prev => { if (!prev) return prev; const n = [...prev]; n[ri] = { ...n[ri], 材质: v }; return n })}
+                              />
+                            ) : (
+                              <span style={{ fontFamily: "'DM Mono',monospace" }}>{row.材质}</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 10px', width: 80, textAlign: 'center' }}>
+                            {isEditingBom ? (
+                              <input type="number" min={1} value={row.数量}
+                                onChange={e => setBomEditRows(prev => { if (!prev) return prev; const n = [...prev]; n[ri] = { ...n[ri], 数量: Math.max(1, Number(e.target.value)) }; return n })}
+                                style={{ width: 56, padding: '4px 6px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 12, textAlign: 'center' }}
+                              />
+                            ) : (
+                              <span style={{ fontFamily: "'DM Mono',monospace" }}>{row.数量}</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '6px 10px' }}>
+                            <Tag color={row.来源?.includes('牌1') ? C.blue : row.来源?.includes('牌2') ? C.amber : C.textLight}>{row.来源}</Tag>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            )
+          })}
+
+          {/* 保存表单 */}
+          <Card title="保存报价单">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 14 }}>
+              {([['客户名称', '客户', 'text'], ['联系人', '联系人', 'text'], ['交期', '交期', 'date']] as [string, string, string][]).map(([label, field, type]) => (
+                <div key={field}>
+                  <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>{label}</div>
+                  <input
+                    type={type}
+                    value={(saveForm as Record<string, string>)[field] || ''}
+                    onChange={e => setSaveForm(prev => ({ ...prev, [field]: e.target.value }))}
+                    placeholder={label.replace(' *', '')}
+                    style={{ width: '100%', padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 13, outline: 'none', boxSizing: 'border-box' }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <Btn variant="ghost" onClick={() => { setStep(1); setBomResults(null) }}>← 修改参数</Btn>
+              <Btn onClick={handleSave}>保存为报价单</Btn>
+            </div>
+          </Card>
         </div>
       )}
     </div>
@@ -470,6 +1549,327 @@ function PageNewQuote({ params, setQuotes, setPage }: {
 
 // ════════════════════════════════════════════════════
 // PAGE: 规则库（两张规则表）
+// ════════════════════════════════════════════════════
+// PAGE: 小样图库
+// ════════════════════════════════════════════════════
+
+const VALVE_TYPES = ['闸阀', '截止阀', '止回阀']
+const PRESSURES   = [150, 300, 600, 900, 1500]
+const ACTUATORS   = ['手轮', '伞齿轮', '电动', '/']
+
+const DEFAULT_FIELDS: PdfFillField[] = [
+  { key: '客户',  label: '客户名', page: 1, x: 415, y: 38, size: 9, coverW: 120, coverH: 10 },
+  { key: '日期',  label: '日期',   page: 1, x: 415, y: 26, size: 8, coverW: 80,  coverH: 10 },
+  { key: '订单号', label: '订单号', page: 1, x: 500, y: 38, size: 8, coverW: 80,  coverH: 10 },
+]
+
+function PageDrawings({ drawings, setDrawings }: {
+  drawings: DrawingTemplate[]
+  setDrawings: React.Dispatch<React.SetStateAction<DrawingTemplate[]>>
+}) {
+  const [editing, setEditing] = useState<DrawingTemplate | null>(null)
+  const [detailMode, setDetailMode] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const emptyForm = (): Omit<DrawingTemplate, 'id' | 'created_at'> => ({
+    name: '', valve_type: '闸阀', pressure: 150, actuator: '手轮',
+    dn_min: 50, dn_max: 600, pdf_url: null, pdf_path: null,
+    pdf_fields: DEFAULT_FIELDS, version: 1,
+    description: '', bom_template: [], rules: '',
+  })
+
+  const [form, setForm] = useState(emptyForm())
+
+  const inp = (style?: React.CSSProperties): React.CSSProperties => ({
+    border: `1px solid ${C.border}`, borderRadius: 5, padding: '5px 8px',
+    fontSize: 13, width: '100%', background: '#fff', ...style,
+  })
+
+  const openNew = () => { setForm(emptyForm()); setEditing(null); setDetailMode(true) }
+  const openEdit = (d: DrawingTemplate) => {
+    setForm({
+      name: d.name, valve_type: d.valve_type, pressure: d.pressure, actuator: d.actuator,
+      dn_min: d.dn_min, dn_max: d.dn_max, pdf_url: d.pdf_url, pdf_path: d.pdf_path,
+      pdf_fields: d.pdf_fields ?? [], version: d.version,
+      description: d.description ?? '', bom_template: d.bom_template ?? [], rules: d.rules ?? '',
+    })
+    setEditing(d); setDetailMode(true)
+  }
+  const closeDetail = () => { setDetailMode(false); setEditing(null) }
+
+  const handleSave = async () => {
+    if (!form.name) return
+    setSaving(true)
+    try {
+      if (editing) {
+        const res = await fetch(`/api/drawings/${editing.id}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(form),
+        })
+        const updated = await res.json()
+        setDrawings(prev => prev.map(d => d.id === editing.id ? updated : d))
+      } else {
+        const id = 'd' + Date.now()
+        const res = await fetch('/api/drawings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, ...form }),
+        })
+        const created = await res.json()
+        setDrawings(prev => [created, ...prev])
+      }
+      closeDetail()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async (d: DrawingTemplate) => {
+    if (!confirm(`确认删除 "${d.name}"？`)) return
+    await fetch(`/api/drawings/${d.id}`, { method: 'DELETE' })
+    setDrawings(prev => prev.filter(x => x.id !== d.id))
+  }
+
+  const handleUpload = async (d: DrawingTemplate, file: File) => {
+    setUploading(true)
+    try {
+      const fd = new FormData(); fd.append('file', file); fd.append('id', d.id)
+      const res = await fetch('/api/drawings/upload', { method: 'POST', body: fd })
+      const json = await res.json()
+      if (json.url) {
+        await fetch(`/api/drawings/${d.id}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pdf_url: json.url }),
+        })
+        setDrawings(prev => prev.map(x => x.id === d.id ? { ...x, pdf_url: json.url } : x))
+        setForm(f => ({ ...f, pdf_url: json.url }))
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  // ── 详情页 ──────────────────────────────────────────────
+  if (detailMode) {
+    const target = editing ?? ({ id: '', created_at: '' } as DrawingTemplate)
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* 顶部导航 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Btn variant="ghost" small onClick={closeDetail}>← 返回</Btn>
+          <span style={{ fontSize: 16, fontWeight: 700, flex: 1 }}>
+            {editing ? editing.name : '新增小样图'}
+          </span>
+          <Btn variant="ghost" onClick={closeDetail}>取消</Btn>
+          <Btn onClick={handleSave} disabled={!form.name || saving}>
+            {saving ? '保存中…' : '保存'}
+          </Btn>
+        </div>
+
+        {/* ① 产品信息 */}
+        <Card title="① 产品信息">
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div style={{ gridColumn: '1/-1' }}>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>图纸名称 *</div>
+              <input style={inp()} value={form.name}
+                onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                placeholder="如：Z40H-150LB 闸阀手轮" />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>阀门类型</div>
+              <select style={inp()} value={form.valve_type} onChange={e => setForm(f => ({ ...f, valve_type: e.target.value }))}>
+                {VALVE_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>压力等级</div>
+              <select style={inp()} value={form.pressure} onChange={e => setForm(f => ({ ...f, pressure: Number(e.target.value) }))}>
+                {PRESSURES.map(p => <option key={p} value={p}>{p}LB</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>驱动方式</div>
+              <select style={inp()} value={form.actuator} onChange={e => setForm(f => ({ ...f, actuator: e.target.value }))}>
+                {ACTUATORS.map(a => <option key={a}>{a}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>版本号</div>
+              <input style={inp()} type="number" value={form.version} onChange={e => setForm(f => ({ ...f, version: Number(e.target.value) }))} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>DN 最小</div>
+              <input style={inp()} type="number" value={form.dn_min} onChange={e => setForm(f => ({ ...f, dn_min: Number(e.target.value) }))} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>DN 最大</div>
+              <input style={inp()} type="number" value={form.dn_max} onChange={e => setForm(f => ({ ...f, dn_max: Number(e.target.value) }))} />
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>
+                产品描述 <span style={{ color: '#bbb' }}>用于语义匹配</span>
+              </div>
+              <textarea style={{ ...inp(), height: 72, resize: 'vertical', fontFamily: 'inherit' }}
+                value={form.description ?? ''}
+                placeholder="适用场合、设计标准、主体材质范围等…"
+                onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>
+                约束规则 <span style={{ color: '#bbb' }}>BOM生成时参考</span>
+              </div>
+              <textarea style={{ ...inp(), height: 72, resize: 'vertical', fontFamily: 'inherit' }}
+                value={form.rules ?? ''}
+                placeholder={'DN≥200 时驱动改为伞齿轮\n介质含H2S时阀杆改为17-4PH\n…'}
+                onChange={e => setForm(f => ({ ...f, rules: e.target.value }))} />
+            </div>
+          </div>
+        </Card>
+
+        {/* ② BOM 模板骨架 */}
+        <Card title="② BOM 模板骨架" extra={
+          <span style={{ fontSize: 11, color: C.textDim }}>
+            材质占位符：{'{{主体}} {{阀杆轴}} {{阀瓣阀闸}} {{阀座}}'}，数量填 "按DN" 由AI推算
+          </span>
+        }>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: '#f5f7fa' }}>
+                {['序', '零件名称', '材质（或占位符）', '数量', ''].map((h, i) => (
+                  <th key={i} style={{ padding: '6px 10px', textAlign: i === 0 || i === 3 ? 'center' : 'left', fontWeight: 600, color: C.textDim, border: `1px solid ${C.border}`, fontSize: 11 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(form.bom_template ?? []).map((row, ri) => (
+                <tr key={ri}>
+                  <td style={{ border: `1px solid ${C.border}`, padding: '2px 6px', textAlign: 'center', color: C.textDim, fontSize: 11, width: 28 }}>{ri + 1}</td>
+                  <td style={{ border: `1px solid ${C.border}`, padding: 2 }}>
+                    <input style={{ ...inp({ padding: '4px 8px', border: 'none', background: 'transparent' }), width: '100%' }}
+                      value={row.零件} onChange={e => setForm(f => { const t = [...(f.bom_template ?? [])]; t[ri] = { ...t[ri], 零件: e.target.value }; return { ...f, bom_template: t } })} />
+                  </td>
+                  <td style={{ border: `1px solid ${C.border}`, padding: 2 }}>
+                    <input style={{ ...inp({ padding: '4px 8px', border: 'none', background: 'transparent', fontFamily: 'monospace', fontSize: 12 }), width: '100%' }}
+                      value={row.材质} placeholder="WCB 或 {{主体}}"
+                      onChange={e => setForm(f => { const t = [...(f.bom_template ?? [])]; t[ri] = { ...t[ri], 材质: e.target.value }; return { ...f, bom_template: t } })} />
+                  </td>
+                  <td style={{ border: `1px solid ${C.border}`, padding: 2, width: 80 }}>
+                    <input style={{ ...inp({ padding: '4px 8px', border: 'none', background: 'transparent', textAlign: 'center' }), width: '100%' }}
+                      value={row.数量} placeholder="1"
+                      onChange={e => setForm(f => { const t = [...(f.bom_template ?? [])]; const v = e.target.value; t[ri] = { ...t[ri], 数量: isNaN(Number(v)) ? v : Number(v) }; return { ...f, bom_template: t } })} />
+                  </td>
+                  <td style={{ border: `1px solid ${C.border}`, padding: '2px 4px', width: 32, textAlign: 'center' }}>
+                    <Btn variant="ghost" small onClick={() => setForm(f => ({ ...f, bom_template: (f.bom_template ?? []).filter((_, i) => i !== ri) }))}>✕</Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ marginTop: 8 }}>
+            <Btn variant="ghost" small onClick={() => setForm(f => ({ ...f, bom_template: [...(f.bom_template ?? []), { 零件: '', 材质: '', 数量: 1 }] }))}>+ 添加零件行</Btn>
+          </div>
+        </Card>
+
+        {/* ③ PDF 填充字段 */}
+        <Card title="③ PDF 填充字段" extra={
+          <span style={{ fontSize: 11, color: C.textDim }}>坐标单位 pt，原点在页面左下角</span>
+        }>
+          {editing && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              {form.pdf_url
+                ? <Tag color={C.blue}>✓ 已上传 PDF</Tag>
+                : <Tag color={C.textLight}>未上传 PDF</Tag>}
+              <label style={{ cursor: 'pointer' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 12px', border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, background: '#f8f9fa', opacity: uploading ? 0.6 : 1 }}>
+                  {uploading ? '上传中…' : form.pdf_url ? '重新上传 PDF' : '上传 PDF'}
+                </span>
+                <input type="file" accept="application/pdf" style={{ display: 'none' }}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(target, f); e.target.value = '' }} />
+              </label>
+            </div>
+          )}
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
+              <thead>
+                <tr style={{ background: '#f5f7fa' }}>
+                  {['填充键', '页', 'X (pt)', 'Y (pt)', '字号', '遮盖宽', '遮盖高', ''].map(h => (
+                    <th key={h} style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: C.textDim, border: `1px solid ${C.border}`, fontSize: 11, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {form.pdf_fields.map((f, fi) => (
+                  <tr key={fi}>
+                    {[
+                      <input key="k" style={inp({ padding: '3px 6px', fontSize: 12 })} value={f.key} placeholder="客户" onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, key: e.target.value }; return { ...prev, pdf_fields: flds } })} />,
+                      <input key="p" style={inp({ padding: '3px 6px', fontSize: 12 })} type="number" value={f.page} onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, page: Number(e.target.value) }; return { ...prev, pdf_fields: flds } })} />,
+                      <input key="x" style={inp({ padding: '3px 6px', fontSize: 12 })} type="number" value={f.x} onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, x: Number(e.target.value) }; return { ...prev, pdf_fields: flds } })} />,
+                      <input key="y" style={inp({ padding: '3px 6px', fontSize: 12 })} type="number" value={f.y} onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, y: Number(e.target.value) }; return { ...prev, pdf_fields: flds } })} />,
+                      <input key="s" style={inp({ padding: '3px 6px', fontSize: 12 })} type="number" value={f.size} onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, size: Number(e.target.value) }; return { ...prev, pdf_fields: flds } })} />,
+                      <input key="cw" style={inp({ padding: '3px 6px', fontSize: 12 })} type="number" value={f.coverW ?? ''} placeholder="—" onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, coverW: Number(e.target.value) || undefined }; return { ...prev, pdf_fields: flds } })} />,
+                      <input key="ch" style={inp({ padding: '3px 6px', fontSize: 12 })} type="number" value={f.coverH ?? ''} placeholder="—" onChange={e => setForm(prev => { const flds = [...prev.pdf_fields]; flds[fi] = { ...f, coverH: Number(e.target.value) || undefined }; return { ...prev, pdf_fields: flds } })} />,
+                    ].map((el, ci) => (
+                      <td key={ci} style={{ border: `1px solid ${C.border}`, padding: 2, minWidth: ci === 0 ? 80 : 60 }}>{el}</td>
+                    ))}
+                    <td style={{ border: `1px solid ${C.border}`, padding: '2px 4px', textAlign: 'center' }}>
+                      <Btn variant="ghost" small onClick={() => setForm(prev => ({ ...prev, pdf_fields: prev.pdf_fields.filter((_, i) => i !== fi) }))}>✕</Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Btn variant="ghost" small onClick={() => setForm(prev => ({ ...prev, pdf_fields: [...prev.pdf_fields, { key: '', label: '', page: 1, x: 400, y: 30, size: 9 }] }))}>+ 添加字段</Btn>
+            <span style={{ fontSize: 11, color: C.textDim }}>可用填充键：客户 日期 订单号 DN 压力 主体 阀杆</span>
+          </div>
+        </Card>
+      </div>
+    )
+  }
+
+  // ── 列表页 ──────────────────────────────────────────────
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ fontSize: 13, color: C.textDim }}>共 {drawings.length} 张产品模板</div>
+        <Btn onClick={openNew}>+ 新增小样图</Btn>
+      </div>
+
+      {drawings.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '48px 0', color: C.textDim, fontSize: 13 }}>暂无图纸，点击"新增小样图"开始</div>
+      )}
+      {drawings.map(d => (
+        <Card key={d.id} title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 700 }}>{d.name}</span>
+            <Tag color={C.blue}>{d.valve_type}</Tag>
+            <Tag color={C.amber}>{d.pressure}LB</Tag>
+            <Tag color={C.textDim}>{d.actuator}</Tag>
+            <Tag color={C.textLight}>DN{d.dn_min}~{d.dn_max}</Tag>
+            <Tag color={C.border}>v{d.version}</Tag>
+          </div>
+        }>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {d.bom_template?.length
+              ? <Tag color={C.green}>BOM {d.bom_template.length} 行</Tag>
+              : <Tag color={C.amber}>⚠ 无BOM模板</Tag>}
+            {d.pdf_url ? <Tag color={C.blue}>✓ 已上传PDF</Tag> : <Tag color={C.textLight}>无PDF</Tag>}
+            <span style={{ flex: 1 }} />
+            <Btn variant="ghost" small onClick={() => openEdit(d)}>编辑</Btn>
+            <Btn variant="ghost" small onClick={() => handleDelete(d)} style={{ color: '#ef4444' }}>删除</Btn>
+          </div>
+          {d.description && (
+            <div style={{ marginTop: 6, fontSize: 12, color: C.textDim, lineHeight: 1.5 }}>{d.description}</div>
+          )}
+        </Card>
+      ))}
+    </div>
+  )
+}
+
 // ════════════════════════════════════════════════════
 
 function PageRules() {
@@ -537,7 +1937,179 @@ function PageRules() {
 }
 
 // ════════════════════════════════════════════════════
-// PAGE: 参数库
+// PAGE: 阀门零件库
+// ════════════════════════════════════════════════════
+
+function PageValveParts() {
+  const [search, setSearch] = useState('')
+  const filtered = VALVE_PARTS.filter(p =>
+    !search || Object.values(p).some(v => v.toLowerCase().includes(search.toLowerCase()))
+  )
+  return (
+    <Card
+      title={`阀门零件库（共 ${filtered.length} 条）`}
+      extra={
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="搜索编号 / 名称 / 材质…"
+          style={{ padding: '5px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 12, width: 200, outline: 'none' }}
+        />
+      }
+    >
+      <DataTable
+        columns={[
+          { title: '零件编号', key: '零件编号', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textDim }}>{v as string}</span> },
+          { title: '零件名称', key: '零件名称', render: v => <span style={{ fontWeight: 600 }}>{v as string}</span> },
+          { title: '规格尺寸', key: '规格尺寸', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12 }}>{v as string}</span> },
+          { title: '材质',     key: '材质',     render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
+        ]}
+        data={filtered as unknown as Record<string, unknown>[]}
+        rowKey="零件编号"
+      />
+    </Card>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 物料清单
+// ════════════════════════════════════════════════════
+
+function PageBomList() {
+  const specs = useMemo(() => ['全部', ...Array.from(new Set(BOM_LIST.map(b => b.产品规格)))], [])
+  const [selectedSpec, setSelectedSpec] = useState('全部')
+  const [search, setSearch] = useState('')
+
+  const filtered = useMemo(() => BOM_LIST.filter(b => {
+    if (selectedSpec !== '全部' && b.产品规格 !== selectedSpec) return false
+    if (search) {
+      const q = search.toLowerCase()
+      return Object.values(b).some(v => String(v).toLowerCase().includes(q))
+    }
+    return true
+  }), [selectedSpec, search])
+
+  return (
+    <Card
+      title={`物料清单（共 ${filtered.length} 条）`}
+      extra={
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select
+            value={selectedSpec}
+            onChange={e => setSelectedSpec(e.target.value)}
+            style={{ padding: '5px 8px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 12, outline: 'none', background: '#fff' }}
+          >
+            {specs.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="搜索名称 / 材质 / 图号…"
+            style={{ padding: '5px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 12, width: 200, outline: 'none' }}
+          />
+        </div>
+      }
+    >
+      <DataTable
+        columns={[
+          { title: '产品规格', key: '产品规格', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.accent, fontWeight: 700 }}>{v as string}</span> },
+          { title: '序号',     key: '序号',     render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textDim }}>{v as string}</span> },
+          { title: '图号/标准号', key: '图号标准号', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textDim }}>{v as string}</span> },
+          { title: '零件名称', key: '零件名称', render: v => <span style={{ fontWeight: 600 }}>{v as string}</span> },
+          { title: '规格尺寸', key: '规格尺寸', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12 }}>{v as string}</span> },
+          { title: '材质',     key: '材质',     render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
+          { title: '数量',     key: '数量',     render: v => <span style={{ fontFamily: "'DM Mono',monospace", textAlign: 'right', display: 'block' }}>{v as number}</span> },
+        ]}
+        data={filtered as unknown as Record<string, unknown>[]}
+      />
+    </Card>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 参数库（Tab 页，9大参数管理）
+// ════════════════════════════════════════════════════
+
+function PageParamLib({ paramLib, setParamLib }: {
+  paramLib: ParamLibrary
+  setParamLib: React.Dispatch<React.SetStateAction<ParamLibrary>>
+}) {
+  const [activeKey, setActiveKey] = useState<keyof ParamLibrary>('类型')
+  const [newVal, setNewVal] = useState('')
+
+  const current = paramLib[activeKey] ?? []
+
+  const addVal = () => {
+    const v = newVal.trim()
+    if (!v || current.includes(v)) return
+    setParamLib(prev => ({ ...prev, [activeKey]: [...prev[activeKey], v].sort() }))
+    setNewVal('')
+  }
+
+  const removeVal = (v: string) =>
+    setParamLib(prev => ({ ...prev, [activeKey]: prev[activeKey].filter(x => x !== v) }))
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {/* Tab 栏 */}
+      <div style={{ display: 'flex', gap: 0, borderBottom: `2px solid ${C.border}`, marginBottom: 14, overflowX: 'auto' }}>
+        {PARAM_LIB_TABS.map(tab => (
+          <div
+            key={tab.key}
+            onClick={() => { setActiveKey(tab.key); setNewVal('') }}
+            style={{
+              padding: '9px 16px', cursor: 'pointer', whiteSpace: 'nowrap',
+              fontSize: 13, fontWeight: activeKey === tab.key ? 700 : 400,
+              color: activeKey === tab.key ? C.accent : C.textDim,
+              borderBottom: activeKey === tab.key ? `2px solid ${C.accent}` : '2px solid transparent',
+              marginBottom: -2,
+            }}
+          >
+            {tab.label}
+            <span style={{ marginLeft: 5, fontSize: 11, color: C.textLight, fontWeight: 400 }}>
+              {paramLib[tab.key]?.length ?? 0}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* 当前 Tab 内容 */}
+      <Card title={`${PARAM_LIB_TABS.find(t => t.key === activeKey)?.label} 参数值`}>
+        {/* 值列表 */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, minHeight: 40, marginBottom: 16 }}>
+          {current.length === 0 && (
+            <span style={{ fontSize: 12, color: C.textLight }}>暂无数据</span>
+          )}
+          {current.map(v => (
+            <div key={v} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px', background: C.blue + '12', borderRadius: 5, border: `1px solid ${C.blue}28` }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: C.blue, fontFamily: "'DM Mono',monospace" }}>{v}</span>
+              <button
+                onClick={() => removeVal(v)}
+                style={{ border: 'none', background: 'none', cursor: 'pointer', color: C.textLight, fontSize: 15, padding: '0 2px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
+                title="删除"
+              >×</button>
+            </div>
+          ))}
+        </div>
+
+        {/* 新增输入 */}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            value={newVal}
+            onChange={e => setNewVal(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && addVal()}
+            placeholder={`输入新的${PARAM_LIB_TABS.find(t => t.key === activeKey)?.label}值，回车添加…`}
+            style={{ flex: 1, padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 13, outline: 'none' }}
+          />
+          <Btn onClick={addVal} disabled={!newVal.trim()}>+ 添加</Btn>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 历史参数组
 // ════════════════════════════════════════════════════
 
 function PageParams({ params }: { params: Param[] }) {
@@ -560,16 +2132,15 @@ function PageParams({ params }: { params: Param[] }) {
       <Card>
         <DataTable
           columns={[
-            { title: '类型', key: '类型', render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
-            { title: 'DN', key: 'DN', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>DN{v as number}</span> },
-            { title: '压力', key: '压力', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}LB</span> },
-            { title: '主体', key: '主体' },
-            { title: '阀瓣阀闸', key: '阀瓣阀闸' },
-            { title: '阀座', key: '阀座' },
-            { title: '阀杆轴', key: '阀杆轴' },
-            { title: '螺柱', key: '螺柱' },
-            { title: '填料', key: '中腔填料' },
-            { title: '件号', key: '件号', render: v => <Tag color={C.amber}>{v as string}</Tag> },
+            { title: '类型',     key: '类型',     render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
+            { title: 'DN',       key: 'DN',       render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>DN{v as number}</span> },
+            { title: '压力',     key: '压力',     render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}LB</span> },
+            { title: '主体',     key: '主体' },
+            { title: '阀瓣/阀闸', key: '阀瓣阀闸' },
+            { title: '阀座',     key: '阀座' },
+            { title: '阀杆/轴', key: '阀杆轴' },
+            { title: '螺柱',     key: '螺柱' },
+            { title: '填料',     key: '中腔填料' },
             { title: '次数', key: '次数', render: v => <span style={{ fontFamily: "'DM Mono',monospace", color: C.textDim }}>{v as number}</span> },
             { title: '数量', key: '数量', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{v as number}</span> },
           ]}
@@ -586,7 +2157,7 @@ function PageParams({ params }: { params: Param[] }) {
 
 function PageQuotes({ quotes, setPage }: { quotes: Quote[]; setPage: (p: PageState) => void }) {
   return (
-    <Card title="报价单列表" extra={<Btn small onClick={() => setPage({ name: 'newQuote' })}>+ 新建报价</Btn>}>
+    <Card title="报价单" extra={<Btn small onClick={() => setPage({ name: 'newQuote' })}>+ 新建报价</Btn>}>
       <DataTable
         columns={[
           { title: '订单号', key: '订单号', render: v => <span style={{ fontWeight: 700, color: C.blue }}>{v as string}</span> },
@@ -603,59 +2174,329 @@ function PageQuotes({ quotes, setPage }: { quotes: Quote[]; setPage: (p: PageSta
   )
 }
 
-function PageQuoteDetail({ quote, goBack }: { quote: Quote; goBack: () => void }) {
-  const [expandIdx, setExpandIdx] = useState<number | null>(null)
+function PageQuoteDetail({ quote, goBack, drawings }: { quote: Quote; goBack: () => void; drawings: DrawingTemplate[] }) {
+  const [expandIdx, setExpandIdx] = useState<number | null>(0)
+  const [generating, setGenerating] = useState<string | null>(null)
+
+  const handleGeneratePdf = async (item: QuoteItem, tpl: DrawingTemplate, preview = false) => {
+    const qs = new URLSearchParams({
+      客户: quote.客户,
+      日期: quote.日期,
+      订单号: quote.订单号,
+      DN: `DN${item.DN}`,
+      压力: `${item.压力}LB`,
+      主体: item.主体,
+      阀杆: item.阀杆轴 ?? '',
+    })
+    if (preview) {
+      // GET 请求直接在新 Tab 打开 PDF，浏览器原生显示，无需 blob
+      window.open(`/api/drawings/${tpl.id}/fill?${qs}`, '_blank')
+      return
+    }
+    // 下载：POST 保留原有逻辑
+    setGenerating(tpl.id)
+    try {
+      const res = await fetch(`/api/drawings/${tpl.id}/fill?mode=download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.fromEntries(qs)),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: '生成失败' }))
+        alert(err.error ?? '生成失败')
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `${tpl.name}-${quote.客户}.pdf`; a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 30000)
+    } catch (e) {
+      alert('生成失败: ' + (e as Error).message)
+    } finally {
+      setGenerating(null)
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 返回 + 状态 + 打印 */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <Btn variant="ghost" small onClick={goBack}>← 返回</Btn>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{quote.订单号}</h2>
         <Tag color={C.status[quote.状态] ?? C.textDim}>{quote.状态}</Tag>
-        <span style={{ fontSize: 13, color: C.textDim }}>{quote.客户} · {quote.日期} · {quote.台计}台</span>
+        <div style={{ flex: 1 }} />
+        {quote.bomData?.length ? (
+          <Btn variant="secondary" small onClick={async () => {
+            const res = await fetch(`/api/quotes/${quote.id}/print`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(quote),
+            })
+            if (!res.ok) { alert((await res.json()).error); return }
+            const html = await res.text()
+            const w = window.open('', '_blank')
+            w?.document.write(html)
+            w?.document.close()
+          }}>🖨 打印 BOM 明细</Btn>
+        ) : null}
       </div>
-      <Card title={`明细（${quote.items.length}行）`}>
-        {quote.items.map((item, idx) => (
-          <div key={idx} style={{ borderBottom: `1px solid ${C.borderLight}`, paddingBottom: 10, marginBottom: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setExpandIdx(expandIdx === idx ? null : idx)}>
-              <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
-              <span style={{ fontWeight: 700 }}>{item.规格 || `DN${item.DN} ${item.压力}LB`}</span>
-              <span style={{ color: C.textDim }}>× {item.数量}</span>
-              <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.blue }}>{item.主体} · {item.阀瓣阀闸} · {item.阀座}</span>
-              {item.件号 && <Tag color={C.amber}>{item.件号}</Tag>}
-              <div style={{ flex: 1 }} />
-              <span style={{ fontSize: 11, color: C.textDim }}>{expandIdx === idx ? '▼' : '▶'}</span>
+
+      {/* 报价单表头 */}
+      <Card title="报价单信息">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
+          {([
+            ['订单号', quote.订单号],
+            ['客户', quote.客户],
+            ['联系人', quote.联系人 || '—'],
+            ['日期', quote.日期],
+            ['交期', quote.交期 || '—'],
+            ['台计', `${quote.台计} 台`],
+            ['状态', quote.状态],
+            ['明细行数', `${quote.items.length} 行`],
+          ] as [string, string][]).map(([k, v]) => (
+            <div key={k}>
+              <div style={{ fontSize: 11, color: C.textLight, marginBottom: 2 }}>{k}</div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{v}</div>
             </div>
-            {expandIdx === idx && (
-              <div style={{ marginTop: 8, padding: 10, background: '#fafaf7', borderRadius: 6 }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 6, fontSize: 12 }}>
-                  {([['主体', item.主体], ['阀瓣阀闸', item.阀瓣阀闸], ['阀座', item.阀座], ['阀杆轴', item.阀杆轴], ['螺柱', item.螺柱], ['填料', item.中腔填料]] as [string, string][]).map(([k, v]) => (
-                    <div key={k}>
-                      <div style={{ fontSize: 10, color: C.textLight }}>{k}</div>
-                      <div style={{ fontWeight: 600 }}>{v || '-'}</div>
-                    </div>
-                  ))}
+          ))}
+        </div>
+        {quote.原始需求 && (
+          <div style={{ marginTop: 12, padding: '8px 12px', background: '#fafaf7', borderRadius: 6, borderLeft: `3px solid ${C.border}` }}>
+            <div style={{ fontSize: 11, color: C.textLight, marginBottom: 4 }}>客户原始需求</div>
+            <div style={{ fontSize: 12, color: C.textDim, whiteSpace: 'pre-wrap' }}>{quote.原始需求}</div>
+          </div>
+        )}
+      </Card>
+
+      {/* 每行明细 + 物料清单 */}
+      {quote.items.map((item, idx) => {
+        const bom = quote.bomData?.[idx]
+        const isOpen = expandIdx === idx
+        return (
+          <Card
+            key={idx}
+            title={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setExpandIdx(isOpen ? null : idx)}>
+                <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
+                <span style={{ fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{item.规格 || item.工厂编号 || `DN${item.DN}`}</span>
+                <span style={{ color: C.textDim }}>× {item.数量}</span>
+                <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textLight, background: C.borderLight, borderRadius: 3, padding: '1px 6px' }}>DN{item.DN} · {item.压力}LB</span>
+                {item.件号 && <Tag color={C.amber}>{item.件号}</Tag>}
+                <span style={{ fontSize: 11, color: C.textLight, marginLeft: 4 }}>{isOpen ? '▼' : '▶'}</span>
+              </div>
+            }
+          >
+            {isOpen && (
+              <div>
+                {/* 确认参数 */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>确认参数</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
+                    {([
+                      ['类型', item.类型], ['DN', `DN${item.DN}`], ['压力', `${item.压力}LB`],
+                      ['主体', item.主体], ['阀瓣/阀闸', item.阀瓣阀闸], ['阀座', item.阀座],
+                      ['阀杆/轴', item.阀杆轴], ['螺柱', item.螺柱], ['填料', item.中腔填料],
+                    ] as [string, string][]).map(([k, v]) => (
+                      <div key={k} style={{ background: '#fafaf7', padding: '4px 8px', borderRadius: 4, border: `1px solid ${C.borderLight}` }}>
+                        <div style={{ fontSize: 10, color: C.textLight }}>{k}</div>
+                        <div style={{ fontWeight: 600 }}>{v || '—'}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                {quote.bomData?.[idx]?.bom && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: C.textDim, marginBottom: 4 }}>BOM · {quote.bomData[idx].牌1} + {quote.bomData[idx].牌2}</div>
-                    <DataTable
-                      columns={[
-                        { title: '#', key: '序号' },
-                        { title: '零件', key: '零件', render: v => <span style={{ fontWeight: 600 }}>{v as string}</span> },
-                        { title: '材质', key: '材质' },
-                        { title: '来源', key: '来源', render: v => <Tag color={(v as string)?.includes('1') ? C.blue : C.amber}>{v as string}</Tag> },
-                      ]}
-                      data={quote.bomData[idx].bom as unknown as Record<string, unknown>[]}
-                      rowKey="序号"
-                    />
+
+                {/* 匹配小样图 */}
+                {(() => {
+                  const tpl = matchDrawing(item, drawings)
+                  if (!tpl) return (
+                    <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fffbeb', borderRadius: 6, border: '1px solid #fde68a', fontSize: 12, color: '#92400e' }}>
+                      ⚠ 未找到匹配小样图（{item.类型} {item.压力}LB {item.驱动} DN{item.DN}）
+                    </div>
+                  )
+                  return (
+                    <div style={{ marginBottom: 12, padding: '10px 14px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #86efac', display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontSize: 18 }}>📐</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#166534' }}>已匹配小样图：{tpl.name}</div>
+                        <div style={{ fontSize: 11, color: '#16a34a' }}>{tpl.valve_type} · {tpl.pressure}LB · {tpl.actuator} · DN{tpl.dn_min}~{tpl.dn_max} · v{tpl.version}</div>
+                      </div>
+                      <Btn
+                        variant="ghost" small
+                        disabled={!tpl.pdf_url}
+                        style={{ opacity: tpl.pdf_url ? 1 : 0.5 }}
+                        onClick={() => handleGeneratePdf(item, tpl, true)}
+                      >
+                        {!tpl.pdf_url ? '待上传 PDF' : '预览小样图'}
+                      </Btn>
+                      <Btn
+                        variant="secondary" small
+                        onClick={() => handleGeneratePdf(item, tpl, false)}
+                        disabled={generating === tpl.id || !tpl.pdf_url}
+                      >
+                        {generating === tpl.id ? '生成中…' : '下载客户版 PDF'}
+                      </Btn>
+                    </div>
+                  )
+                })()}
+
+                {/* 物料清单 */}
+                {bom && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
+                      物料清单 (BOM) · {bom.牌1} + {bom.牌2}
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                        <thead>
+                          <tr>
+                            {['#', '零件', '材质', '数量', '来源'].map(h => (
+                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {bom.bom.map((row, ri) => (
+                            <tr key={ri} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
+                              <td style={{ padding: '5px 10px', color: C.textDim, fontFamily: "'DM Mono',monospace" }}>{row.序号}</td>
+                              <td style={{ padding: '5px 10px', fontWeight: 600 }}>{row.零件}</td>
+                              <td style={{ padding: '5px 10px', fontFamily: "'DM Mono',monospace" }}>{row.材质}</td>
+                              <td style={{ padding: '5px 10px', textAlign: 'center', fontFamily: "'DM Mono',monospace" }}>{row.数量 ?? 1}</td>
+                              <td style={{ padding: '5px 10px' }}>
+                                <Tag color={row.来源?.includes('牌1') ? C.blue : row.来源?.includes('牌2') ? C.amber : C.textLight}>{row.来源}</Tag>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>
             )}
-          </div>
-        ))}
-      </Card>
+          </Card>
+        )
+      })}
     </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 报价明细（所有明细行汇总）
+// ════════════════════════════════════════════════════
+
+function PageQuoteItems({ quotes }: { quotes: Quote[] }) {
+  const [selected, setSelected] = useState<{ quote: Quote; idx: number } | null>(null)
+
+  // 展开所有明细行
+  const flatItems = quotes.flatMap(q =>
+    q.items.map((item, idx) => ({ quote: q, item, idx }))
+  )
+
+  // ── 详情视图 ──
+  if (selected) {
+    const { quote, idx } = selected
+    const item = quote.items[idx]
+    const bom = quote.bomData?.[idx]
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Btn variant="ghost" small onClick={() => setSelected(null)}>← 返回明细列表</Btn>
+          <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
+          <span style={{ fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>
+            {item.规格 || item.工厂编号 || `DN${item.DN}`}
+          </span>
+          <span style={{ color: C.textDim }}>× {item.数量}</span>
+          <span style={{ fontSize: 12, color: C.textDim }}>— {quote.客户} · {quote.订单号}</span>
+        </div>
+
+        <Card title="确认参数">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
+            {([
+              ['类型', item.类型], ['DN', `DN${item.DN}`], ['压力', `${item.压力}LB`],
+              ['主体', item.主体], ['阀瓣/阀闸', item.阀瓣阀闸], ['阀座', item.阀座],
+              ['阀杆/轴', item.阀杆轴], ['螺柱', item.螺柱], ['填料', item.中腔填料],
+            ] as [string, string][]).map(([k, v]) => (
+              <div key={k} style={{ background: '#fafaf7', padding: '4px 8px', borderRadius: 4, border: `1px solid ${C.borderLight}` }}>
+                <div style={{ fontSize: 10, color: C.textLight }}>{k}</div>
+                <div style={{ fontWeight: 600 }}>{v || '—'}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        {bom && (
+          <Card title={`物料清单 (BOM) · ${bom.牌1} + ${bom.牌2}`}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    {['#', '零件', '材质', '数量', '来源'].map(h => (
+                      <th key={h} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {bom.bom.map((row, ri) => (
+                    <tr key={ri} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
+                      <td style={{ padding: '5px 10px', color: C.textDim, fontFamily: "'DM Mono',monospace" }}>{row.序号}</td>
+                      <td style={{ padding: '5px 10px', fontWeight: 600 }}>{row.零件}</td>
+                      <td style={{ padding: '5px 10px', fontFamily: "'DM Mono',monospace" }}>{row.材质}</td>
+                      <td style={{ padding: '5px 10px', textAlign: 'center', fontFamily: "'DM Mono',monospace" }}>{row.数量 ?? 1}</td>
+                      <td style={{ padding: '5px 10px' }}>
+                        <Tag color={row.来源?.includes('牌1') ? C.blue : row.来源?.includes('牌2') ? C.amber : C.textLight}>{row.来源}</Tag>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+      </div>
+    )
+  }
+
+  // ── 汇总列表 ──
+  return (
+    <Card title={`报价明细（共 ${flatItems.length} 行）`}>
+      <DataTable
+        columns={[
+          { title: '订单号', key: '订单号', render: v => <span style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
+          { title: '客户', key: '客户' },
+          { title: '类型', key: '类型', render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
+          { title: '规格', key: '规格', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
+          { title: 'DN·压力', key: 'spec', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textDim }}>{v as string}</span> },
+          { title: '数量', key: '数量', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}</span> },
+          { title: '主体', key: '主体' },
+          { title: '件号', key: '件号', render: v => <Tag color={C.amber}>{v as string}</Tag> },
+          { title: '状态', key: '状态', render: v => <Tag color={C.status[v as string] ?? C.textDim}>{v as string}</Tag> },
+        ]}
+        data={flatItems.map((fi, i) => ({
+          id: `${fi.quote.id}-${fi.idx}`,
+          订单号: fi.quote.订单号,
+          客户: fi.quote.客户,
+          类型: fi.item.类型,
+          规格: fi.item.规格 || fi.item.工厂编号 || `DN${fi.item.DN}`,
+          spec: `DN${fi.item.DN} · ${fi.item.压力}LB`,
+          数量: fi.item.数量,
+          主体: fi.item.主体,
+          件号: fi.item.件号 || '—',
+          状态: fi.quote.状态,
+          _quoteId: fi.quote.id,
+          _idx: fi.idx,
+          _i: i,
+        }))}
+        onRowClick={row => {
+          const q = quotes.find(q => q.id === (row._quoteId as string))
+          if (q) setSelected({ quote: q, idx: row._idx as number })
+        }}
+      />
+      {flatItems.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 30, color: C.textLight }}>暂无明细数据，请先新建报价单</div>
+      )}
+    </Card>
   )
 }
 
@@ -709,7 +2550,7 @@ function PageDashboard({ params, quotes, setPage }: {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 0' }}>
             <Btn onClick={() => setPage({ name: 'newQuote' })} style={{ width: '100%', padding: '12px 16px', fontSize: 14 }}>+ 新建报价</Btn>
             <Btn variant="secondary" onClick={() => setPage({ name: 'rules' })} style={{ width: '100%' }}>查看规则库</Btn>
-            <Btn variant="ghost" onClick={() => setPage({ name: 'params' })} style={{ width: '100%' }}>浏览参数库</Btn>
+            <Btn variant="ghost" onClick={() => setPage({ name: 'params' })} style={{ width: '100%' }}>历史参数组</Btn>
           </div>
         </Card>
       </div>
@@ -735,39 +2576,77 @@ function PageDashboard({ params, quotes, setPage }: {
 // ════════════════════════════════════════════════════
 
 const NAV = [
-  { id: 'dashboard', icon: '◉', label: '首页', group: '' },
-  { id: 'newQuote', icon: '⊕', label: '新建报价', group: '核心流程' },
-  { id: 'quotes', icon: '☰', label: '报价单列表', group: '核心流程' },
-  { id: 'params', icon: '⬡', label: '参数库', group: '数据管理' },
-  { id: 'rules', icon: '☶', label: '规则库', group: '数据管理' },
+  { id: 'dashboard',   icon: '◉', label: '首页',       group: '' },
+  { id: 'newQuote',    icon: '⊕', label: '新建报价',   group: '核心流程' },
+  { id: 'quotes',      icon: '☰', label: '报价单',     group: '核心流程' },
+  { id: 'quoteItems',  icon: '≡', label: '报价明细', group: '核心流程' },
+  { id: 'drawings',    icon: '📐', label: '小样图库',   group: '数据管理' },
+  { id: 'valveParts',  icon: '⊞', label: '阀门零件库', group: '数据管理' },
+  { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },
+  { id: 'paramLib',    icon: '◈', label: '参数库',     group: '数据管理' },
+  { id: 'rules',       icon: '☶', label: '规则库',     group: '数据管理' },
+  { id: 'params',      icon: '⬡', label: '历史参数组', group: '数据管理' },
 ]
 
 export function ValveQuoteApp() {
   const [page, setPage] = useState<PageState>({ name: 'dashboard' })
-  const [params] = useState<Param[]>(SEED_PARAMS)
-  const [quotes, setQuotes] = useState<Quote[]>(SEED_QUOTES)
+  const [params, setParams] = useState<Param[]>([])
+  const [paramLib, setParamLib] = useState<ParamLibrary>(() => initParamLib(SEED_PARAMS))
+  const [quotes, setQuotes] = useState<Quote[]>([])
+  const [drawings, setDrawings] = useState<DrawingTemplate[]>([])
+  const [业务员, set业务员] = useState<string>('')
   const [loaded, setLoaded] = useState(false)
 
+  // 客户端初始化：从 localStorage 恢复业务员和 paramLib
   useEffect(() => {
     try {
-      const r = localStorage.getItem('vq2-data')
-      if (r) { const d = JSON.parse(r); if (d.quotes) setQuotes(d.quotes) }
+      const saved业务员 = localStorage.getItem('vq-salesperson')
+      if (saved业务员) set业务员(saved业务员)
+      const savedLib = localStorage.getItem('vq2-paramlib')
+      if (savedLib) setParamLib(prev => ({ ...prev, ...JSON.parse(savedLib) }))
     } catch { /* ignore */ }
-    setLoaded(true)
   }, [])
 
+  // 从 Supabase 加载数据
+  useEffect(() => {
+    const load = async () => {
+      const [qRes, pRes, dRes] = await Promise.all([
+        supabase.from('quotes').select('id, data').order('created_at', { ascending: false }),
+        supabase.from('params').select('id, data'),
+        fetch('/api/drawings').then(r => r.json()),
+      ])
+      if (qRes.data) setQuotes(qRes.data.map((r: { id: string; data: Quote }) => r.data))
+      if (pRes.data && pRes.data.length > 0) {
+        const ps = pRes.data.map((r: { id: string; data: Param }) => r.data)
+        setParams(ps)
+        setParamLib(prev => ({ ...initParamLib(ps), ...prev }))
+      } else {
+        setParams(SEED_PARAMS)
+      }
+      if (Array.isArray(dRes)) setDrawings(dRes)
+      setLoaded(true)
+    }
+    load()
+  }, [])
+
+  // paramLib 手动添加值持久化到 localStorage
   useEffect(() => {
     if (!loaded) return
-    try { localStorage.setItem('vq2-data', JSON.stringify({ quotes })) } catch { /* ignore */ }
-  }, [quotes, loaded])
+    try { localStorage.setItem('vq2-paramlib', JSON.stringify(paramLib)) } catch { /* ignore */ }
+  }, [paramLib, loaded])
 
   const renderPage = () => {
     switch (page.name) {
       case 'dashboard': return <PageDashboard params={params} quotes={quotes} setPage={setPage} />
-      case 'newQuote': return <PageNewQuote params={params} setQuotes={setQuotes} setPage={setPage} />
+      case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} />
       case 'quotes': return <PageQuotes quotes={quotes} setPage={setPage} />
-      case 'quoteDetail': return <PageQuoteDetail quote={page.data} goBack={() => setPage({ name: 'quotes' })} />
+      case 'quoteDetail': return <PageQuoteDetail quote={page.data} goBack={() => setPage({ name: 'quotes' })} drawings={drawings} />
+      case 'quoteItems': return <PageQuoteItems quotes={quotes} />
       case 'params': return <PageParams params={params} />
+      case 'drawings':   return <PageDrawings drawings={drawings} setDrawings={setDrawings} />
+      case 'valveParts': return <PageValveParts />
+      case 'bomList': return <PageBomList />
+      case 'paramLib': return <PageParamLib paramLib={paramLib} setParamLib={setParamLib} />
       case 'rules': return <PageRules />
     }
   }
@@ -778,7 +2657,7 @@ export function ValveQuoteApp() {
       {/* 侧边栏 */}
       <div style={{ width: 190, background: C.sidebar, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ padding: '18px 14px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}><span style={{ color: C.accent }}>⬡</span> ValveQuote</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}><span style={{ color: C.accent }}>⬡</span> 越强阀门</div>
           <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>阀门智能报价 v2.0</div>
         </div>
         <nav style={{ padding: '6px 0', flex: 1 }}>
@@ -801,7 +2680,23 @@ export function ValveQuoteApp() {
             )
           })}
         </nav>
-        <div style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', fontSize: 10, color: 'rgba(255,255,255,0.2)' }}>产品方案 v1.0 · 超强阀门</div>
+        <div
+          style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer' }}
+          onClick={() => {
+            const name = prompt('请输入您的姓名：', 业务员)
+            if (name !== null) {
+              const trimmed = name.trim()
+              set业务员(trimmed)
+              localStorage.setItem('vq-salesperson', trimmed)
+            }
+          }}
+          title="点击修改姓名"
+        >
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)' }}>业务员</div>
+          <div style={{ fontSize: 12, color: 业务员 ? 'rgba(255,255,255,0.6)' : C.amber, marginTop: 2 }}>
+            {业务员 || '⚠ 点击设置姓名'}
+          </div>
+        </div>
       </div>
 
       {/* 主内容区 */}
