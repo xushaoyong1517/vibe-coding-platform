@@ -2,6 +2,7 @@ import type { NextConfig } from 'next'
 import { withBotId } from 'botid/next/config'
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ['@napi-rs/canvas', 'pdfjs-dist'],
   webpack(config) {
     config.module.rules.push({
       test: /\.md/,

@@ -3,6 +3,7 @@ import paramExtractCorePrompt from './skills/param-extract-core.md'
 import paramExtractApiPrompt from './skills/param-extract-api.md'
 import paramExtractGbPrompt from './skills/param-extract-gb.md'
 import bomGeneratePrompt from './skills/bom-generate.md'
+import dataInitPrompt from './skills/data-init.md'
 
 function buildParamExtractPrompt(message: string | undefined): string {
   const hasGb = /\bgb\b|gb\/t|pn\d{2,}/i.test(message ?? '')
@@ -20,6 +21,8 @@ export async function POST(req: Request) {
     system = buildParamExtractPrompt(message)
   } else if (skill === 'bom-generate') {
     system = bomGeneratePrompt
+  } else if (skill === 'data-init') {
+    system = dataInitPrompt
   } else {
     return NextResponse.json({ error: `未知 skill: ${skill}` }, { status: 400 })
   }
@@ -39,8 +42,8 @@ export async function POST(req: Request) {
     : message
 
   const payload = JSON.stringify({
-    model: isVision ? 'moonshot-v1-8k-vision-preview' : 'moonshot-v1-32k',
-    max_tokens: skill === 'bom-generate' ? 4000 : 2000,
+    model: isVision ? 'moonshot-v1-32k-vision-preview' : 'moonshot-v1-32k',
+    max_tokens: skill === 'bom-generate' ? 4000 : skill === 'data-init' ? 6000 : 2000,
     ...(!isVision && { response_format: { type: 'json_object' } }),
     messages: [
       { role: 'system', content: system },

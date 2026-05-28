@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis } from 'recharts'
 
 // SKILL prompts 已移至服务端 app/api/claude/skills/
 // 客户端只传 skill 名称，不暴露提示词内容
@@ -96,6 +96,8 @@ interface BOMResult {
   来源?: 'exact' | 'fuzzy' | 'ai' | 'template'
   历史次数?: number
   差异字段?: string[]
+  drawing_id?: string    // 生成时匹配到的小样图 ID（不论是否用了骨架）
+  drawing_name?: string  // 冗余名称，避免查表
 }
 
 interface Quote {
@@ -431,6 +433,7 @@ type PageState =
   | { name: 'bomList' }
   | { name: 'drawings' }
   | { name: 'rules' }
+  | { name: 'dataInit' }
 
 // ════════════════════════════════════════════════════
 // VALIDATION
@@ -602,9 +605,9 @@ const C = {
 // SHARED COMPONENTS
 // ════════════════════════════════════════════════════
 
-function Tag({ children, color = C.blue }: { children: React.ReactNode; color?: string }) {
+function Tag({ children, color = C.blue, onClick, style }: { children: React.ReactNode; color?: string; onClick?: () => void; style?: React.CSSProperties }) {
   return (
-    <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 3, fontSize: 11, fontWeight: 600, background: color + '18', color }}>
+    <span onClick={onClick} style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 3, fontSize: 11, fontWeight: 600, background: color + '18', color, ...style }}>
       {children}
     </span>
   )
@@ -1102,6 +1105,13 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
           aiPayload.template_name = tpl.name
           if (tpl.rules) aiPayload.template_rules = tpl.rules
         }
+        // 如果初始化导入了规则表，追加到 payload 覆盖默认表
+        try {
+          const rt1 = localStorage.getItem('ruleTable1')
+          const rt2 = localStorage.getItem('ruleTable2')
+          if (rt1) aiPayload._rule_table_1_override = JSON.parse(rt1)
+          if (rt2) aiPayload._rule_table_2_override = JSON.parse(rt2)
+        } catch { /* ignore */ }
         if (i > 0) await new Promise(r => setTimeout(r, 800))
         const src = tpl?.bom_template?.length ? `模板「${tpl.name}」` : 'AI 从零生成'
         setProgress({ pct: Math.round((i / total) * 90) + 5, label: `${src}：${item.类型} DN${item.DN} ${item.主体}…` })
@@ -1110,6 +1120,8 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
         results.push({
           item, bom: parsed?.bom || [], 牌1: parsed?.牌1 || '', 牌2: parsed?.牌2 || '',
           来源: tpl?.bom_template?.length ? 'template' : 'ai',
+          drawing_id: tpl?.id,
+          drawing_name: tpl?.name,
         })
         setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}` })
       }
@@ -1126,7 +1138,11 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       id: 'q' + Date.now(),
       客户: saveForm.客户 || '新客户',
       联系人: saveForm.联系人 || undefined,
-      订单号: 'Q' + new Date().toISOString().slice(2, 10).replace(/-/g, ''),
+      订单号: (() => {
+        const prefix = 'Q' + new Date().toISOString().slice(2, 10).replace(/-/g, '')
+        const todayCount = quotes.filter(q => q.订单号.startsWith(prefix)).length
+        return prefix + String(todayCount + 1).padStart(3, '0')
+      })(),
       日期: new Date().toISOString().slice(0, 10),
       交期: saveForm.交期 || undefined,
       状态: '草稿',
@@ -1469,7 +1485,11 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                           )}
                         </span>
                       )}
-                      {r.来源 === 'ai' && <Tag color={C.blue}>AI 生成</Tag>}
+                      {r.来源 === 'template' && <Tag color={C.green}>📐 {r.drawing_name ?? '模板'}</Tag>}
+                      {r.来源 === 'ai' && r.drawing_id && (
+                        <Tag color={C.amber}>⚠ 已匹配「{r.drawing_name}」但无BOM骨架，AI自由生成</Tag>
+                      )}
+                      {r.来源 === 'ai' && !r.drawing_id && <Tag color={C.blue}>AI 生成（无匹配模板）</Tag>}
                       <Btn variant="ghost" small onClick={() => startBomEdit(idx)}>修改</Btn>
                     </div>
                   )
@@ -1570,7 +1590,14 @@ function PageDrawings({ drawings, setDrawings }: {
   const [editing, setEditing] = useState<DrawingTemplate | null>(null)
   const [detailMode, setDetailMode] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [uploadingId, setUploadingId] = useState<string | null>(null) // 哪张卡片正在上传
+  const [uploadPct, setUploadPct] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [uploadStep, setUploadStep] = useState(false)   // 上传步骤（新增流程）
+  const [parsing, setParsing] = useState(false)          // AI解析中
+  const [pendingId, setPendingId] = useState<string | null>(null)  // 新增时的预生成ID
+  const [bomExpandId, setBomExpandId] = useState<string | null>(null) // 展开BOM的卡片id
+  const [retransmitId, setRetransmitId] = useState<string | null>(null) // 重传PDF的输入引用
 
   const emptyForm = (): Omit<DrawingTemplate, 'id' | 'created_at'> => ({
     name: '', valve_type: '闸阀', pressure: 150, actuator: '手轮',
@@ -1586,7 +1613,7 @@ function PageDrawings({ drawings, setDrawings }: {
     fontSize: 13, width: '100%', background: '#fff', ...style,
   })
 
-  const openNew = () => { setForm(emptyForm()); setEditing(null); setDetailMode(true) }
+  const openNew = () => { setUploadStep(true); setDetailMode(false); setEditing(null); setPendingId(null) }
   const openEdit = (d: DrawingTemplate) => {
     setForm({
       name: d.name, valve_type: d.valve_type, pressure: d.pressure, actuator: d.actuator,
@@ -1594,15 +1621,16 @@ function PageDrawings({ drawings, setDrawings }: {
       pdf_fields: d.pdf_fields ?? [], version: d.version,
       description: d.description ?? '', bom_template: d.bom_template ?? [], rules: d.rules ?? '',
     })
-    setEditing(d); setDetailMode(true)
+    setEditing(d); setPendingId(null); setDetailMode(true)
   }
-  const closeDetail = () => { setDetailMode(false); setEditing(null) }
+  const closeDetail = () => { setDetailMode(false); setUploadStep(false); setEditing(null); setPendingId(null) }
 
   const handleSave = async () => {
     if (!form.name) return
     setSaving(true)
     try {
-      if (editing) {
+      if (editing && !pendingId) {
+        // 编辑已有记录 → PUT
         const res = await fetch(`/api/drawings/${editing.id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(form),
@@ -1610,7 +1638,8 @@ function PageDrawings({ drawings, setDrawings }: {
         const updated = await res.json()
         setDrawings(prev => prev.map(d => d.id === editing.id ? updated : d))
       } else {
-        const id = 'd' + Date.now()
+        // 新增（含解析后的pendingId，或普通新增）
+        const id = pendingId ?? ('d' + Date.now())
         const res = await fetch('/api/drawings', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id, ...form }),
@@ -1625,33 +1654,112 @@ function PageDrawings({ drawings, setDrawings }: {
   }
 
   const handleDelete = async (d: DrawingTemplate) => {
-    if (!confirm(`确认删除 "${d.name}"？`)) return
+    if (!confirm(`确认删除「${d.name}」？\n\n⚠️ 删除后无法找回，请确认。`)) return
     await fetch(`/api/drawings/${d.id}`, { method: 'DELETE' })
     setDrawings(prev => prev.filter(x => x.id !== d.id))
   }
 
-  const handleUpload = async (d: DrawingTemplate, file: File) => {
-    setUploading(true)
-    try {
-      const fd = new FormData(); fd.append('file', file); fd.append('id', d.id)
-      const res = await fetch('/api/drawings/upload', { method: 'POST', body: fd })
-      const json = await res.json()
-      if (json.url) {
-        await fetch(`/api/drawings/${d.id}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pdf_url: json.url }),
-        })
-        setDrawings(prev => prev.map(x => x.id === d.id ? { ...x, pdf_url: json.url } : x))
-        setForm(f => ({ ...f, pdf_url: json.url }))
+  const handleUpload = (d: DrawingTemplate, file: File) => {
+    setUploading(true); setUploadingId(d.id); setUploadPct(0)
+    const fd = new FormData(); fd.append('file', file); fd.append('id', d.id)
+    const xhr = new XMLHttpRequest()
+    xhr.upload.onprogress = e => { if (e.lengthComputable) setUploadPct(Math.round(e.loaded / e.total * 95)) }
+    xhr.onload = async () => {
+      setUploadPct(100)
+      try {
+        const json = JSON.parse(xhr.responseText)
+        if (json.url) {
+          await fetch(`/api/drawings/${d.id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pdf_url: json.url }),
+          })
+          setDrawings(prev => prev.map(x => x.id === d.id ? { ...x, pdf_url: json.url } : x))
+          setForm(f => ({ ...f, pdf_url: json.url }))
+        }
+      } finally {
+        setTimeout(() => { setUploading(false); setUploadingId(null); setUploadPct(0) }, 600)
       }
-    } finally {
-      setUploading(false)
     }
+    xhr.onerror = () => { setUploading(false); setUploadingId(null); setUploadPct(0) }
+    xhr.open('POST', '/api/drawings/upload')
+    xhr.send(fd)
+  }
+
+  const handleNewUpload = async (file: File) => {
+    setParsing(true)
+    const newId = 'd' + Date.now()
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('id', newId)
+    try {
+      const res = await fetch('/api/drawings/parse', { method: 'POST', body: fd })
+      const data = await res.json()
+      setForm({
+        name:         data.name ?? '',
+        valve_type:   VALVE_TYPES.includes(data.valve_type)  ? data.valve_type  : '闸阀',
+        pressure:     PRESSURES.includes(Number(data.pressure)) ? Number(data.pressure) : 150,
+        actuator:     ACTUATORS.includes(data.actuator)      ? data.actuator    : '手轮',
+        dn_min:       Number(data.dn_min)  || 50,
+        dn_max:       Number(data.dn_max)  || 600,
+        pdf_url:      data.pdf_url ?? null,
+        pdf_path:     null,
+        pdf_fields:   DEFAULT_FIELDS,
+        version:      1,
+        description:  data.description ?? '',
+        bom_template: Array.isArray(data.bom_template) ? data.bom_template : [],
+        rules:        data.rules ?? '',
+      })
+      setPendingId(newId)
+    } catch {
+      setForm(emptyForm())
+      setPendingId(newId) // PDF已上传，保留ID
+    }
+    setParsing(false)
+    setUploadStep(false)
+    setDetailMode(true)
+  }
+
+  // ── 上传步骤（新增流程第一步）──────────────────────────
+  if (uploadStep && !detailMode) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Btn variant="ghost" small onClick={closeDetail}>← 返回</Btn>
+          <span style={{ fontSize: 16, fontWeight: 700 }}>新增小样图</span>
+        </div>
+        <Card title="第一步：上传图纸 PDF">
+          {parsing ? (
+            <div style={{ padding: '48px 0', textAlign: 'center' }}>
+              <div style={{ fontSize: 22, marginBottom: 12 }}>⏳</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>AI 正在解析图纸内容…</div>
+              <div style={{ fontSize: 12, color: C.textDim }}>提取阀门型号、BOM 清单等信息，约需 15~30 秒</div>
+            </div>
+          ) : (
+            <label style={{ cursor: 'pointer', display: 'block' }}>
+              <div style={{
+                border: `2px dashed ${C.border}`, borderRadius: 10,
+                padding: '52px 0', textAlign: 'center', background: '#fafafa',
+                transition: 'border-color .15s',
+              }}>
+                <div style={{ fontSize: 32, marginBottom: 12 }}>📄</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>点击选择 PDF 文件</div>
+                <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.8 }}>
+                  上传后 AI 自动提取：阀门型号、BOM 清单、压力等级等信息<br />
+                  解析结果可在下一步手动修改
+                </div>
+              </div>
+              <input type="file" accept="application/pdf" style={{ display: 'none' }}
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleNewUpload(f); e.target.value = '' }} />
+            </label>
+          )}
+        </Card>
+      </div>
+    )
   }
 
   // ── 详情页 ──────────────────────────────────────────────
   if (detailMode) {
-    const target = editing ?? ({ id: '', created_at: '' } as DrawingTemplate)
+    const target = editing ?? ({ id: pendingId ?? '', created_at: '' } as DrawingTemplate)
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* 顶部导航 */}
@@ -1781,13 +1889,20 @@ function PageDrawings({ drawings, setDrawings }: {
               {form.pdf_url
                 ? <Tag color={C.blue}>✓ 已上传 PDF</Tag>
                 : <Tag color={C.textLight}>未上传 PDF</Tag>}
-              <label style={{ cursor: 'pointer' }}>
+              <label style={{ cursor: uploading ? 'default' : 'pointer' }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 12px', border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, background: '#f8f9fa', opacity: uploading ? 0.6 : 1 }}>
-                  {uploading ? '上传中…' : form.pdf_url ? '重新上传 PDF' : '上传 PDF'}
+                  {uploading ? `上传中… ${uploadPct}%` : form.pdf_url ? '重新上传 PDF' : '上传 PDF'}
                 </span>
-                <input type="file" accept="application/pdf" style={{ display: 'none' }}
+                <input type="file" accept="application/pdf" style={{ display: 'none' }} disabled={uploading}
                   onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(target, f); e.target.value = '' }} />
               </label>
+              {uploading && (
+                <div style={{ flex: 1, minWidth: 120 }}>
+                  <div style={{ height: 5, background: C.borderLight, borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: 3, background: C.blue, width: `${uploadPct}%`, transition: 'width 0.2s ease' }} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>
@@ -1854,18 +1969,514 @@ function PageDrawings({ drawings, setDrawings }: {
         }>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {d.bom_template?.length
-              ? <Tag color={C.green}>BOM {d.bom_template.length} 行</Tag>
+              ? <Tag color={C.green} style={{ cursor: 'pointer' }} onClick={() => setBomExpandId(bomExpandId === d.id ? null : d.id)}>
+                  BOM {d.bom_template.length} 行 {bomExpandId === d.id ? '▲' : '▼'}
+                </Tag>
               : <Tag color={C.amber}>⚠ 无BOM模板</Tag>}
-            {d.pdf_url ? <Tag color={C.blue}>✓ 已上传PDF</Tag> : <Tag color={C.textLight}>无PDF</Tag>}
+            {d.pdf_url
+              ? <Tag color={C.blue} style={{ cursor: 'pointer' }} onClick={() => window.open(d.pdf_url!, '_blank')}>✓ 已上传PDF</Tag>
+              : <Tag color={C.textLight}>无PDF</Tag>}
             <span style={{ flex: 1 }} />
             <Btn variant="ghost" small onClick={() => openEdit(d)}>编辑</Btn>
+            {uploadingId === d.id ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 140 }}>
+                <span style={{ fontSize: 12, color: C.textDim, whiteSpace: 'nowrap' }}>上传中 {uploadPct}%</span>
+                <div style={{ flex: 1, height: 5, background: C.borderLight, borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', borderRadius: 3, background: C.blue, width: `${uploadPct}%`, transition: 'width 0.2s ease' }} />
+                </div>
+              </div>
+            ) : (
+              <label style={{ cursor: 'pointer', display: 'inline-block' }} onClick={e => {
+                if (d.pdf_url && !confirm('将覆盖已上传的PDF，确定重传？')) e.preventDefault()
+              }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 10px', borderRadius: 5, border: `1px solid ${C.border}`, fontSize: 12, color: C.text, background: '#fff', cursor: 'pointer' }}>
+                  重传PDF
+                </span>
+                <input type="file" accept=".pdf" style={{ display: 'none' }} onChange={e => {
+                  const f = e.target.files?.[0]; e.target.value = ''; if (f) handleUpload(d, f)
+                }} />
+              </label>
+            )}
             <Btn variant="ghost" small onClick={() => handleDelete(d)} style={{ color: '#ef4444' }}>删除</Btn>
           </div>
+          {bomExpandId === d.id && d.bom_template?.length ? (
+            <div style={{ marginTop: 10, borderTop: `1px solid ${C.border}`, paddingTop: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: '#f5f7fa' }}>
+                    {['序', '零件名称', '材质（或占位符）', '数量'].map(h => (
+                      <th key={h} style={{ padding: '5px 8px', textAlign: 'left', fontWeight: 600, color: C.textDim, border: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.bom_template.map((row, i) => (
+                    <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafaf8' }}>
+                      <td style={{ padding: '4px 8px', border: `1px solid ${C.border}`, color: C.textDim, width: 32 }}>{i + 1}</td>
+                      <td style={{ padding: '4px 8px', border: `1px solid ${C.border}`, fontWeight: 500 }}>{row.零件}</td>
+                      <td style={{ padding: '4px 8px', border: `1px solid ${C.border}`, color: row.材质.startsWith('{{') ? C.amber : C.text, fontFamily: row.材质.startsWith('{{') ? 'monospace' : undefined }}>{row.材质 || '—'}</td>
+                      <td style={{ padding: '4px 8px', border: `1px solid ${C.border}`, color: row.数量 === '按DN' ? C.blue : C.text }}>{String(row.数量)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
           {d.description && (
             <div style={{ marginTop: 6, fontSize: 12, color: C.textDim, lineHeight: 1.5 }}>{d.description}</div>
           )}
         </Card>
       ))}
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 数据初始化
+// ════════════════════════════════════════════════════
+
+interface RuleTable1Row { seq: number; part: string; materials: string[] }
+interface RuleTable1 { columns: string[]; rows: RuleTable1Row[] }
+interface RuleTable2Row { 件号: string; 闸板密封面?: string; 阀座密封面?: string; 阀杆?: string; 填料压套?: string; 备注?: string; [k: string]: string | undefined }
+interface RuleTable2 { rows: RuleTable2Row[] }
+
+interface InitExtracted {
+  param_combinations: Omit<Param, 'id' | '次数'>[]
+  param_values: Partial<Record<keyof ParamLibrary, (string | number)[]>>
+  rules: string[]
+  rule_table_1?: RuleTable1
+  rule_table_1_ext?: RuleTable1
+  rule_table_2?: RuleTable2
+}
+
+function PageDataInit({
+  params, setParams, paramLib, setParamLib,
+}: {
+  params: Param[]
+  setParams: React.Dispatch<React.SetStateAction<Param[]>>
+  paramLib: ParamLibrary
+  setParamLib: React.Dispatch<React.SetStateAction<ParamLibrary>>
+}) {
+  const [files, setFiles] = useState<File[]>([])
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [progress, setProgress] = useState<{ label: string; current: number; total: number } | null>(null)
+  const [extracted, setExtracted] = useState<InitExtracted | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+
+  // ── 计算差异 ──────────────────────────────────────────
+  const diff = useMemo(() => {
+    if (!extracted) return null
+
+    // 参数组合：判断是否已存在（类型+DN+压力+主体+件号）
+    const existKey = (p: Param | Omit<Param, 'id' | '次数'>) =>
+      `${p.类型}|${p.DN}|${p.压力}|${p.主体}|${p.件号}`
+    const existKeys = new Set(params.map(existKey))
+    const combNew: typeof extracted.param_combinations = []
+    const combExist: typeof extracted.param_combinations = []
+    for (const c of extracted.param_combinations) {
+      if (existKeys.has(existKey(c))) combExist.push(c)
+      else combNew.push(c)
+    }
+
+    // 参数值：哪些是新值
+    const valNew: Record<string, (string | number)[]> = {}
+    for (const [field, vals] of Object.entries(extracted.param_values ?? {})) {
+      const existing = (paramLib[field as keyof ParamLibrary] ?? []) as (string | number)[]
+      const novel = (vals ?? []).filter(v => !existing.includes(v as string))
+      if (novel.length) valNew[field] = novel
+    }
+
+    // 规则表：有则视为新增
+    const hasTable1 = (extracted.rule_table_1?.rows?.length ?? 0) > 0
+    const hasTable2 = (extracted.rule_table_2?.rows?.length ?? 0) > 0
+
+    return { combNew, combExist, valNew, hasTable1, hasTable2 }
+  }, [extracted, params, paramLib])
+
+  // ── 提取 ──────────────────────────────────────────────
+  const handleExtract = async () => {
+    if (files.length === 0 && !note.trim()) return
+    setLoading(true); setError(null); setExtracted(null); setProgress(null)
+    try {
+      const parts: string[] = []
+      const imageParts: { base64: string; mime: string; name: string }[] = []
+
+      const toB64 = (buf: ArrayBuffer) => {
+        const bytes = new Uint8Array(buf)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i += 8192)
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+        return btoa(binary)
+      }
+
+      // Step 1: 读取 / 上传文件
+      const textFiles = files.filter(f => !f.type.startsWith('image/') && !f.name.endsWith('.pdf'))
+      const imgFiles  = files.filter(f =>  f.type.startsWith('image/') ||  f.name.endsWith('.pdf'))
+      const totalSteps = imgFiles.length + (textFiles.length > 0 || note.trim() ? 1 : 0)
+
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]
+        setProgress({ label: `读取文件：${f.name}`, current: i + 1, total: files.length })
+        const buf = await f.arrayBuffer()
+        if (f.type.startsWith('image/') || f.name.endsWith('.pdf')) {
+          imageParts.push({ base64: toB64(buf), mime: f.type || 'application/pdf', name: f.name })
+        } else {
+          setProgress({ label: `提取文字：${f.name}`, current: i + 1, total: files.length })
+          const fd = new FormData(); fd.append('file', f); fd.append('purpose', 'file-extract')
+          const uploadRes = await fetch('/api/init/upload', { method: 'POST', body: fd })
+          if (uploadRes.ok) {
+            const { text } = await uploadRes.json()
+            if (text) parts.push(`【文件：${f.name}】\n${text}`)
+          }
+        }
+      }
+      if (note.trim()) parts.push(`【补充说明】\n${note.trim()}`)
+
+      // Step 2: 逐图调用视觉 AI，文字合并成一次调用
+      const allResults: InitExtracted[] = []
+      let aiStep = 0
+
+      if (imageParts.length > 0) {
+        for (const img of imageParts) {
+          aiStep++
+          setProgress({ label: `AI 分析图片：${img.name}`, current: aiStep, total: totalSteps })
+          const res = await fetch('/api/claude', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              skill: 'data-init',
+              message: parts.join('\n\n') || '请从图片中提取阀门参数数据，按要求输出JSON。',
+              imageBase64: img.base64,
+              imageMime: img.mime,
+            }),
+          })
+          const { text, error: e } = await res.json()
+          if (e) throw new Error(e)
+          try { allResults.push(JSON.parse(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim())) } catch { /* skip */ }
+        }
+      }
+
+      if (parts.length > 0) {
+        aiStep++
+        setProgress({ label: 'AI 分析文字内容…', current: aiStep, total: totalSteps })
+        const res = await fetch('/api/claude', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skill: 'data-init', message: parts.join('\n\n') }),
+        })
+        const { text, error: e } = await res.json()
+        if (e) throw new Error(e)
+        try { allResults.push(JSON.parse(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim())) } catch { /* skip */ }
+      }
+
+      if (allResults.length === 0) throw new Error('未能提取到任何数据')
+
+      // 合并多次结果
+      const merged: InitExtracted = {
+        param_combinations: allResults.flatMap(r => r.param_combinations ?? []),
+        param_values: {},
+        rules: allResults.flatMap(r => r.rules ?? []),
+      }
+      for (const r of allResults) {
+        for (const [k, v] of Object.entries(r.param_values ?? {})) {
+          const key = k as keyof ParamLibrary
+          merged.param_values[key] = [...new Set([...(merged.param_values[key] ?? []), ...(v as (string|number)[])])] as string[]
+        }
+      }
+
+      setExtracted(merged)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+    setLoading(false)
+    setProgress(null)
+  }
+
+  // ── 确认导入 ─────────────────────────────────────────
+  const handleImport = () => {
+    if (!extracted || !diff) return
+
+    // 新增参数组合
+    if (diff.combNew.length > 0) {
+      const newParams: Param[] = diff.combNew.map(c => ({
+        id: 'p' + Date.now() + Math.random(),
+        次数: 1,
+        类型: c.类型 ?? '',
+        DN: c.DN ?? 0,
+        压力: c.压力 ?? 0,
+        驱动: c.驱动 ?? '手轮',
+        连接: c.连接 ?? 'RF',
+        主体: c.主体 ?? '',
+        阀瓣阀闸: c.阀瓣阀闸 ?? '',
+        阀座: c.阀座 ?? '',
+        阀杆轴: c.阀杆轴 ?? '',
+        螺柱: c.螺柱 ?? '',
+        中腔填料: c.中腔填料 ?? '',
+        设计标准: c.设计标准 ?? 'API600',
+        件号: c.件号 ?? '',
+        数量: c.数量 ?? 1,
+      }))
+      setParams(prev => [...newParams, ...prev])
+    }
+
+    // 新增参数值到 paramLib
+    if (Object.keys(diff.valNew).length > 0) {
+      setParamLib(prev => {
+        const next = { ...prev }
+        for (const [field, vals] of Object.entries(diff.valNew)) {
+          const key = field as keyof ParamLibrary
+          const existing = (prev[key] ?? []) as string[]
+          next[key] = [...new Set([...existing, ...(vals as string[])])] as typeof existing
+        }
+        return next
+      })
+    }
+
+    // 保存规则表到 localStorage，BOM 生成时读取并覆盖默认表
+    if (extracted.rule_table_1) localStorage.setItem('ruleTable1', JSON.stringify(extracted.rule_table_1))
+    if (extracted.rule_table_1_ext) localStorage.setItem('ruleTable1Ext', JSON.stringify(extracted.rule_table_1_ext))
+    if (extracted.rule_table_2) localStorage.setItem('ruleTable2', JSON.stringify(extracted.rule_table_2))
+
+    setDone(true)
+  }
+
+  // ── 重置 ─────────────────────────────────────────────
+  const handleReset = () => { setFiles([]); setNote(''); setExtracted(null); setError(null); setDone(false) }
+
+  const inp: React.CSSProperties = { border: `1px solid ${C.border}`, borderRadius: 5, padding: '7px 10px', fontSize: 13, width: '100%', background: '#fff', boxSizing: 'border-box' }
+
+  if (done && diff) {
+    const tablesSaved = diff.hasTable1 || diff.hasTable2
+    const totalNew = diff.combNew.length + Object.values(diff.valNew).reduce((s, v) => s + v.length, 0)
+    return (
+      <Card title="初始化完成">
+        <div style={{ textAlign: 'center', padding: '32px 0' }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>导入成功</div>
+          <div style={{ fontSize: 13, color: C.textDim, marginBottom: 24 }}>
+            新增参数组合 {diff.combNew.length} 条 · 新增参数值 {Object.values(diff.valNew).reduce((s, v) => s + v.length, 0)} 个
+            {tablesSaved && <span> · 规则表已更新</span>}
+            {totalNew === 0 && !tablesSaved && '（数据已是最新，无需更新）'}
+          </div>
+          <Btn onClick={handleReset}>继续导入</Btn>
+        </div>
+      </Card>
+    )
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Step 1: 上传 */}
+      <Card title="① 上传文件">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <label style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            border: `2px dashed ${C.border}`, borderRadius: 8, padding: '28px 16px', cursor: 'pointer',
+            background: files.length > 0 ? '#f0fdf4' : '#fafaf8', gap: 6,
+          }}>
+            <span style={{ fontSize: 28 }}>📂</span>
+            <span style={{ fontSize: 13, color: C.textDim }}>
+              {files.length > 0
+                ? files.map(f => f.name).join('、')
+                : '点击上传 PDF / 截图 / Excel（可多选）'}
+            </span>
+            <span style={{ fontSize: 11, color: C.textLight }}>支持 .pdf .png .jpg .xlsx .xls .csv</span>
+            <input
+              type="file"
+              multiple
+              accept=".pdf,.png,.jpg,.jpeg,.webp,.xlsx,.xls,.csv"
+              style={{ display: 'none' }}
+              onChange={e => setFiles(Array.from(e.target.files ?? []))}
+            />
+          </label>
+
+          <div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>补充说明（可选）</div>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="例：这是2024年碳钢闸阀的历史订单，主要客户是石化行业"
+              rows={3}
+              style={{ ...inp, resize: 'vertical', fontFamily: 'inherit' }}
+            />
+          </div>
+
+          {error && <div style={{ padding: '8px 12px', background: '#fef2f2', borderRadius: 6, fontSize: 12, color: '#dc2626' }}>⚠ {error}</div>}
+
+          {loading && progress && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textDim }}>
+                <span>{progress.label}</span>
+                <span>{progress.current} / {progress.total}</span>
+              </div>
+              <div style={{ height: 6, background: C.borderLight, borderRadius: 3, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', borderRadius: 3, background: C.accent,
+                  width: `${Math.round(progress.current / progress.total * 100)}%`,
+                  transition: 'width 0.3s ease',
+                }} />
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Btn onClick={handleExtract} disabled={loading || (files.length === 0 && !note.trim())}>
+              {loading ? '⏳ AI 提取中…' : '🔍 提取数据'}
+            </Btn>
+          </div>
+        </div>
+      </Card>
+
+      {/* Step 2: 汇总预览 */}
+      {extracted && diff && (
+        <>
+          {/* 汇总卡片 */}
+          <Card title="② 提取汇总">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+              {[
+                { label: '参数组合', total: extracted.param_combinations.length, newCount: diff.combNew.length, existCount: diff.combExist.length, color: C.blue },
+                { label: '新参数值', total: Object.values(extracted.param_values ?? {}).reduce((s, v) => s + (v?.length ?? 0), 0), newCount: Object.values(diff.valNew).reduce((s, v) => s + v.length, 0), existCount: 0, color: C.green },
+                { label: '规则', total: extracted.rules.length, newCount: extracted.rules.length, existCount: 0, color: C.amber },
+                { label: '牌1材质表', total: extracted.rule_table_1?.rows?.length ?? 0, newCount: extracted.rule_table_1?.rows?.length ?? 0, existCount: 0, color: C.blue },
+                { label: '牌2件号表', total: extracted.rule_table_2?.rows?.length ?? 0, newCount: extracted.rule_table_2?.rows?.length ?? 0, existCount: 0, color: C.accent },
+              ].map(({ label, total, newCount, existCount, color }) => (
+                <div key={label} style={{ background: '#fafaf8', borderRadius: 8, padding: '12px 16px', border: `1px solid ${C.border}` }}>
+                  <div style={{ fontSize: 11, color: C.textDim, marginBottom: 6 }}>{label}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color, fontFamily: 'monospace' }}>{total}</div>
+                  <div style={{ fontSize: 11, marginTop: 4 }}>
+                    <span style={{ color: C.green }}>新增 {newCount}</span>
+                    {existCount > 0 && <span style={{ color: C.textDim, marginLeft: 8 }}>已有 {existCount}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* 参数组合明细 */}
+          {extracted.param_combinations.length > 0 && (
+            <Card title={`参数组合明细（${extracted.param_combinations.length} 条）`}>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: '#f5f7fa' }}>
+                      {['状态', '类型', 'DN', '压力', '数量', '主体', '件号', '设计标准', '工厂编号'].map(h => (
+                        <th key={h} style={{ padding: '6px 8px', textAlign: 'left', border: `1px solid ${C.border}`, fontWeight: 600, color: C.textDim, whiteSpace: 'nowrap', fontSize: 11 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {extracted.param_combinations.map((c, i) => {
+                      const isNew = diff.combNew.includes(c)
+                      return (
+                        <tr key={i} style={{ background: isNew ? '#f0fdf4' : '#fff' }}>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}` }}>
+                            <Tag color={isNew ? C.green : C.textDim}>{isNew ? '新增' : '已有'}</Tag>
+                          </td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}` }}><Tag color={C.tag[c.类型] ?? C.blue}>{c.类型}</Tag></td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}`, fontFamily: 'monospace' }}>DN{c.DN}</td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}`, fontFamily: 'monospace' }}>{c.压力}LB</td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}`, textAlign: 'center' }}>{c.数量}</td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}` }}>{c.主体}</td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}` }}><Tag color={C.amber}>{c.件号}</Tag></td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}`, color: C.textDim }}>{c.设计标准}</td>
+                          <td style={{ padding: '5px 8px', border: `1px solid ${C.border}`, color: C.textDim, fontFamily: 'monospace', fontSize: 11 }}>{c.工厂编号}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* 新参数值明细 */}
+          {Object.keys(diff.valNew).length > 0 && (
+            <Card title="新增参数值">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                {Object.entries(diff.valNew).map(([field, vals]) => (
+                  <div key={field} style={{ background: '#f0fdf4', borderRadius: 6, padding: '8px 12px', border: `1px solid #86efac` }}>
+                    <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>{field}</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {vals.map((v, i) => <Tag key={i} color={C.green}>{String(v)}</Tag>)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* 规则 */}
+          {extracted.rules.length > 0 && (
+            <Card title="提取到的规则（仅供参考，不自动导入）">
+              <ul style={{ margin: 0, padding: '0 0 0 18px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {extracted.rules.map((r, i) => (
+                  <li key={i} style={{ fontSize: 12, color: C.textDim }}>{r}</li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
+          {/* 确认按钮 */}
+          {/* 牌1预览 */}
+          {extracted.rule_table_1 && extracted.rule_table_1.rows.length > 0 && (
+            <Card title={`牌1：零部件材质表（${extracted.rule_table_1.rows.length} 行）`}>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead><tr style={{ background: '#eff6ff' }}>
+                    {['#', '零件', ...(extracted.rule_table_1.columns ?? [])].map((h, i) => (
+                      <th key={i} style={{ padding: '5px 8px', textAlign: 'left', border: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {extracted.rule_table_1.rows.map((r, i) => (
+                      <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#f9fafb' }}>
+                        <td style={{ padding: '4px 8px', border: `1px solid ${C.border}`, textAlign: 'center' }}>{r.seq}</td>
+                        <td style={{ padding: '4px 8px', border: `1px solid ${C.border}`, fontWeight: 600 }}>{r.part}</td>
+                        {(r.materials ?? []).map((m, j) => (
+                          <td key={j} style={{ padding: '4px 8px', border: `1px solid ${C.border}`, fontSize: 11 }}>{m}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          {/* 牌2预览 */}
+          {extracted.rule_table_2 && extracted.rule_table_2.rows.length > 0 && (
+            <Card title={`牌2：件号对应表（${extracted.rule_table_2.rows.length} 行）`}>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead><tr style={{ background: '#fff7ed' }}>
+                    {Object.keys(extracted.rule_table_2.rows[0] ?? {}).map((h, i) => (
+                      <th key={i} style={{ padding: '5px 8px', textAlign: 'left', border: `1px solid ${C.border}`, whiteSpace: 'nowrap' }}>{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {extracted.rule_table_2.rows.map((r, i) => (
+                      <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fffbf5' }}>
+                        {Object.values(r).map((v, j) => (
+                          <td key={j} style={{ padding: '4px 8px', border: `1px solid ${C.border}`, fontWeight: j === 0 ? 700 : 400 }}>{v ?? ''}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <Btn variant="ghost" onClick={handleReset}>重新上传</Btn>
+            <Btn onClick={handleImport} disabled={diff.combNew.length === 0 && Object.keys(diff.valNew).length === 0 && !diff.hasTable1 && !diff.hasTable2}>
+              ✅ 确认导入（新增 {diff.combNew.length} 条参数组合，{Object.values(diff.valNew).reduce((s, v) => s + v.length, 0)} 个参数值{diff.hasTable1 || diff.hasTable2 ? '，含规则表' : ''}）
+            </Btn>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -2155,18 +2766,41 @@ function PageParams({ params }: { params: Param[] }) {
 // PAGE: 报价单列表 + 详情
 // ════════════════════════════════════════════════════
 
-function PageQuotes({ quotes, setPage }: { quotes: Quote[]; setPage: (p: PageState) => void }) {
+function PageQuotes({ quotes, setQuotes, setPage }: {
+  quotes: Quote[]
+  setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
+  setPage: (p: PageState) => void
+}) {
+  const handleDelete = async (q: Quote) => {
+    if (!confirm(`确认删除报价单「${q.订单号}」？\n\n⚠️ 删除后无法找回，请确认。`)) return
+    await fetch(`/api/quotes/${q.id}`, { method: 'DELETE' })
+    setQuotes(prev => prev.filter(x => x.id !== q.id))
+  }
+
   return (
     <Card title="报价单" extra={<Btn small onClick={() => setPage({ name: 'newQuote' })}>+ 新建报价</Btn>}>
       <DataTable
         columns={[
-          { title: '订单号', key: '订单号', render: v => <span style={{ fontWeight: 700, color: C.blue }}>{v as string}</span> },
+          {
+            title: '订单号', key: '订单号',
+            render: (v, row) => (
+              <span
+                style={{ fontWeight: 700, color: C.blue, cursor: 'pointer', textDecoration: 'underline' }}
+                onClick={() => setPage({ name: 'quoteDetail', data: row as unknown as Quote })}
+              >{v as string}</span>
+            ),
+          },
           { title: '客户', key: '客户' },
           { title: '日期', key: '日期' },
           { title: '台计', key: '台计', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}台</span> },
           { title: '状态', key: '状态', render: v => <Tag color={C.status[v as string] ?? C.textDim}>{v as string}</Tag> },
           { title: '明细', key: 'items', render: v => <span style={{ color: C.textDim }}>{(v as QuoteItem[]).length}行</span> },
-          { title: '', key: 'id', render: (_, row) => <Btn variant="ghost" small onClick={() => setPage({ name: 'quoteDetail', data: row as unknown as Quote })}>查看</Btn> },
+          {
+            title: '', key: 'id',
+            render: (_, row) => (
+              <Btn variant="ghost" small onClick={() => handleDelete(row as unknown as Quote)} style={{ color: '#ef4444' }}>删除</Btn>
+            ),
+          },
         ]}
         data={quotes as unknown as Record<string, unknown>[]}
       />
@@ -2308,34 +2942,48 @@ function PageQuoteDetail({ quote, goBack, drawings }: { quote: Quote; goBack: ()
 
                 {/* 匹配小样图 */}
                 {(() => {
-                  const tpl = matchDrawing(item, drawings)
+                  // 优先用保存的 drawing_id，降级到实时匹配
+                  const tpl = bom?.drawing_id
+                    ? drawings.find(d => d.id === bom.drawing_id) ?? matchDrawing(item, drawings)
+                    : matchDrawing(item, drawings)
                   if (!tpl) return (
                     <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fffbeb', borderRadius: 6, border: '1px solid #fde68a', fontSize: 12, color: '#92400e' }}>
                       ⚠ 未找到匹配小样图（{item.类型} {item.压力}LB {item.驱动} DN{item.DN}）
                     </div>
                   )
+                  const noSkeleton = bom?.来源 !== 'template' && bom?.drawing_id === tpl.id
                   return (
-                    <div style={{ marginBottom: 12, padding: '10px 14px', background: '#f0fdf4', borderRadius: 6, border: '1px solid #86efac', display: 'flex', alignItems: 'center', gap: 12 }}>
-                      <span style={{ fontSize: 18 }}>📐</span>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: '#166534' }}>已匹配小样图：{tpl.name}</div>
-                        <div style={{ fontSize: 11, color: '#16a34a' }}>{tpl.valve_type} · {tpl.pressure}LB · {tpl.actuator} · DN{tpl.dn_min}~{tpl.dn_max} · v{tpl.version}</div>
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ padding: '10px 14px', background: '#f0fdf4', borderRadius: noSkeleton ? '6px 6px 0 0' : 6, border: '1px solid #86efac', display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <span style={{ fontSize: 18 }}>📐</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#166534' }}>
+                            小样图：{tpl.name}
+                            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: '#16a34a', fontFamily: 'monospace' }}>{tpl.id}</span>
+                          </div>
+                          <div style={{ fontSize: 11, color: '#16a34a' }}>{tpl.valve_type} · {tpl.pressure}LB · {tpl.actuator} · DN{tpl.dn_min}~{tpl.dn_max} · v{tpl.version}</div>
+                        </div>
+                        <Btn
+                          variant="ghost" small
+                          disabled={!tpl.pdf_url}
+                          style={{ opacity: tpl.pdf_url ? 1 : 0.5 }}
+                          onClick={() => handleGeneratePdf(item, tpl, true)}
+                        >
+                          {!tpl.pdf_url ? '待上传 PDF' : '预览小样图'}
+                        </Btn>
+                        <Btn
+                          variant="secondary" small
+                          onClick={() => handleGeneratePdf(item, tpl, false)}
+                          disabled={generating === tpl.id || !tpl.pdf_url}
+                        >
+                          {generating === tpl.id ? '生成中…' : '下载客户版 PDF'}
+                        </Btn>
                       </div>
-                      <Btn
-                        variant="ghost" small
-                        disabled={!tpl.pdf_url}
-                        style={{ opacity: tpl.pdf_url ? 1 : 0.5 }}
-                        onClick={() => handleGeneratePdf(item, tpl, true)}
-                      >
-                        {!tpl.pdf_url ? '待上传 PDF' : '预览小样图'}
-                      </Btn>
-                      <Btn
-                        variant="secondary" small
-                        onClick={() => handleGeneratePdf(item, tpl, false)}
-                        disabled={generating === tpl.id || !tpl.pdf_url}
-                      >
-                        {generating === tpl.id ? '生成中…' : '下载客户版 PDF'}
-                      </Btn>
+                      {noSkeleton && (
+                        <div style={{ padding: '6px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderTop: 'none', borderRadius: '0 0 6px 6px', fontSize: 11, color: '#92400e' }}>
+                          ⚠ 报价时该小样图 BOM 骨架为空，BOM 由 AI 自由生成（结构与小样图不一致）。建议在小样图库补全 BOM 骨架后重新生成报价。
+                        </div>
+                      )}
                     </div>
                   )
                 })()}
@@ -2385,7 +3033,11 @@ function PageQuoteDetail({ quote, goBack, drawings }: { quote: Quote; goBack: ()
 // PAGE: 报价明细（所有明细行汇总）
 // ════════════════════════════════════════════════════
 
-function PageQuoteItems({ quotes }: { quotes: Quote[] }) {
+function PageQuoteItems({ quotes, drawings, setPage }: {
+  quotes: Quote[]
+  drawings: DrawingTemplate[]
+  setPage: (p: PageState) => void
+}) {
   const [selected, setSelected] = useState<{ quote: Quote; idx: number } | null>(null)
 
   // 展开所有明细行
@@ -2463,7 +3115,18 @@ function PageQuoteItems({ quotes }: { quotes: Quote[] }) {
     <Card title={`报价明细（共 ${flatItems.length} 行）`}>
       <DataTable
         columns={[
-          { title: '订单号', key: '订单号', render: v => <span style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
+          {
+            title: '订单号', key: '订单号',
+            render: (v, row) => {
+              const q = quotes.find(x => x.id === (row._quoteId as string))
+              return (
+                <span
+                  style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace", cursor: q ? 'pointer' : 'default', textDecoration: q ? 'underline' : 'none' }}
+                  onClick={e => { e.stopPropagation(); if (q) setPage({ name: 'quoteDetail', data: q }) }}
+                >{v as string}</span>
+              )
+            },
+          },
           { title: '客户', key: '客户' },
           { title: '类型', key: '类型', render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
           { title: '规格', key: '规格', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
@@ -2472,6 +3135,33 @@ function PageQuoteItems({ quotes }: { quotes: Quote[] }) {
           { title: '主体', key: '主体' },
           { title: '件号', key: '件号', render: v => <Tag color={C.amber}>{v as string}</Tag> },
           { title: '状态', key: '状态', render: v => <Tag color={C.status[v as string] ?? C.textDim}>{v as string}</Tag> },
+          {
+            title: '操作', key: '_quoteId',
+            render: (_v, row) => {
+              const q = quotes.find(x => x.id === (row._quoteId as string))
+              const idx = row._idx as number
+              const bom = q?.bomData?.[idx]
+              const drawing = bom?.drawing_id
+                ? drawings.find(d => d.id === bom.drawing_id)
+                : q ? matchDrawing(q.items[idx], drawings) : null
+              const pdf = drawing?.pdf_url
+              const hasBom = (bom?.bom?.length ?? 0) > 0
+              return (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                  <span
+                    style={{ fontSize: 12, color: hasBom ? C.blue : C.textLight, cursor: hasBom ? 'pointer' : 'default', whiteSpace: 'nowrap' }}
+                    onClick={() => { if (q) setSelected({ quote: q, idx }) }}
+                  >查看BOM</span>
+                  {pdf && (
+                    <span
+                      style={{ fontSize: 12, color: C.green, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                      onClick={() => window.open(pdf, '_blank')}
+                    >预览小样图</span>
+                  )}
+                </div>
+              )
+            },
+          },
         ]}
         data={flatItems.map((fi, i) => ({
           id: `${fi.quote.id}-${fi.idx}`,
@@ -2504,28 +3194,81 @@ function PageQuoteItems({ quotes }: { quotes: Quote[] }) {
 // PAGE: 首页 Dashboard
 // ════════════════════════════════════════════════════
 
-function PageDashboard({ params, quotes, setPage }: {
-  params: Param[]
+function PageDashboard({ quotes, drawings, setPage }: {
   quotes: Quote[]
+  drawings: DrawingTemplate[]
   setPage: (p: PageState) => void
 }) {
-  const totalQty = params.reduce((s, p) => s + p.数量, 0)
-  const byType = useMemo(() => {
-    const m: Record<string, number> = {}
-    params.forEach(p => { m[p.类型] = (m[p.类型] || 0) + p.数量 })
-    return Object.entries(m).map(([name, value]) => ({ name, value }))
-  }, [params])
-  const PIE = [C.blue, C.accent, C.green]
+  const [selectedDay, setSelectedDay] = useState<string | null>(null)
+
+  const yesterday = useMemo(() => {
+    const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10)
+  }, [])
+  const day30ago = useMemo(() => {
+    const d = new Date(); d.setDate(d.getDate() - 29); return d.toISOString().slice(0, 10)
+  }, [])
+
+  const yesterdayQuotes = useMemo(() => quotes.filter(q => q.日期 === yesterday), [quotes, yesterday])
+  const yesterdayItems  = useMemo(() => yesterdayQuotes.reduce((s, q) => s + q.items.length, 0), [yesterdayQuotes])
+  const totalItems      = useMemo(() => quotes.reduce((s, q) => s + q.items.length, 0), [quotes])
+
+  const chartData = useMemo(() => {
+    const days = []
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i)
+      const date = d.toISOString().slice(0, 10)
+      const dq = quotes.filter(q => q.日期 === date)
+      days.push({
+        date,
+        label: `${d.getMonth() + 1}/${d.getDate()}`,
+        报价单: dq.length,
+        报价明细: dq.reduce((s, q) => s + q.items.length, 0),
+      })
+    }
+    return days
+  }, [quotes])
+
+  const filteredItems = useMemo(() => {
+    const src = selectedDay
+      ? quotes.filter(q => q.日期 === selectedDay)
+      : quotes.filter(q => q.日期 >= day30ago)
+    return src.flatMap(q =>
+      q.items.map((item, idx) => {
+        const bom = q.bomData?.[idx]
+        const drawing = bom?.drawing_id
+          ? drawings.find(d => d.id === bom.drawing_id)
+          : matchDrawing(item, drawings)
+        return {
+          id: `${q.id}-${idx}`,
+          _quoteId: q.id,
+          _quote: q,
+          _drawingPdf: drawing?.pdf_url ?? null,
+          _hasBom: (bom?.bom?.length ?? 0) > 0,
+          订单号: q.订单号,
+          日期: q.日期,
+          客户: q.客户,
+          类型: item.类型,
+          规格: item.规格 || item.工厂编号 || `DN${item.DN}`,
+          spec: `DN${item.DN} · ${item.压力}LB`,
+          数量: item.数量,
+          主体: item.主体,
+          件号: item.件号 || '—',
+          状态: q.状态,
+        }
+      })
+    )
+  }, [quotes, drawings, selectedDay, day30ago])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* 顶部4指标 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
-        {[
-          { val: params.length, label: '参数组合', color: C.blue },
-          { val: totalQty.toLocaleString(), label: '历史总量', color: C.accent },
-          { val: TRIM_TABLE.length, label: '件号规则', color: C.green },
-          { val: quotes.length, label: '报价单', color: C.amber },
-        ].map(({ val, label, color }) => (
+        {([
+          { val: yesterdayItems,        label: '昨天报价明细', color: C.blue },
+          { val: yesterdayQuotes.length, label: '昨天报价单',  color: C.accent },
+          { val: totalItems,            label: '历史报价明细', color: C.green },
+          { val: drawings.length,       label: '小样图数',     color: C.amber },
+        ] as { val: number; label: string; color: string }[]).map(({ val, label, color }) => (
           <Card key={label}>
             <div style={{ textAlign: 'center', padding: '8px 0' }}>
               <div style={{ fontSize: 28, fontWeight: 800, color, fontFamily: "'DM Mono',monospace" }}>{val}</div>
@@ -2535,37 +3278,129 @@ function PageDashboard({ params, quotes, setPage }: {
         ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Card title="按类型分布">
-          <ResponsiveContainer width="100%" height={140}>
-            <PieChart>
-              <Pie data={byType} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={30} outerRadius={55} paddingAngle={3}>
-                {byType.map((_, i) => <Cell key={i} fill={PIE[i % PIE.length]} />)}
-              </Pie>
-              <Tooltip />
-            </PieChart>
+      {/* 图表 + 快捷操作 */}
+      <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 12 }}>
+        <Card title={
+          <span>
+            最近30天报价
+            {selectedDay && (
+              <span style={{ marginLeft: 10, fontSize: 11, fontWeight: 400, color: C.accent }}>
+                已选 {selectedDay}
+                <span
+                  style={{ marginLeft: 6, cursor: 'pointer', color: C.blue, textDecoration: 'underline' }}
+                  onClick={() => setSelectedDay(null)}
+                >清除</span>
+              </span>
+            )}
+          </span>
+        }>
+          <ResponsiveContainer width="100%" height={180}>
+            <ComposedChart
+              data={chartData}
+              margin={{ top: 6, right: 16, bottom: 0, left: 0 }}
+              style={{ cursor: 'pointer' }}
+              onClick={e => {
+                // activePayload is populated when cursor is on a data point; fall back to activeLabel
+                const date =
+                  (e?.activePayload?.[0]?.payload as { date?: string } | undefined)?.date ??
+                  chartData.find(d => d.label === e?.activeLabel)?.date
+                if (date) setSelectedDay(prev => prev === date ? null : date)
+              }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke={C.borderLight} vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={4} axisLine={false} tickLine={false} />
+              <YAxis
+                allowDecimals={false}
+                tick={{ fontSize: 10 }}
+                width={28}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(v: number) => String(Math.round(v))}
+              />
+              <Tooltip
+                formatter={(val: unknown, name: string) => [val, name]}
+                labelFormatter={(_: unknown, payload: {payload?: {date?: string}}[]) => payload?.[0]?.payload?.date ?? ''}
+              />
+              <Line dataKey="报价明细" stroke={C.blue}   strokeWidth={2} connectNulls
+                dot={(p: {cx:number;cy:number;value:number}) => p.value > 0 ? <circle key={`bm-${p.cx}`} cx={p.cx} cy={p.cy} r={3} fill={C.blue} /> : <g key={`bm-${p.cx}`}/>}
+                activeDot={{ r: 4 }} />
+              <Line dataKey="报价单"   stroke={C.accent} strokeWidth={2} connectNulls
+                dot={(p: {cx:number;cy:number;value:number}) => p.value > 0 ? <circle key={`bq-${p.cx}`} cx={p.cx} cy={p.cy} r={3} fill={C.accent} /> : <g key={`bq-${p.cx}`}/>}
+                activeDot={{ r: 4 }} />
+            </ComposedChart>
           </ResponsiveContainer>
         </Card>
+
         <Card title="快捷操作">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 0' }}>
-            <Btn onClick={() => setPage({ name: 'newQuote' })} style={{ width: '100%', padding: '12px 16px', fontSize: 14 }}>+ 新建报价</Btn>
-            <Btn variant="secondary" onClick={() => setPage({ name: 'rules' })} style={{ width: '100%' }}>查看规则库</Btn>
-            <Btn variant="ghost" onClick={() => setPage({ name: 'params' })} style={{ width: '100%' }}>历史参数组</Btn>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 0' }}>
+            <Btn onClick={() => setPage({ name: 'newQuote' })} style={{ width: '100%', fontSize: 14 }}>+ 新建报价</Btn>
+            <Btn variant="secondary" onClick={() => setPage({ name: 'quotes' })} style={{ width: '100%' }}>查看报价单</Btn>
+            <Btn variant="ghost" onClick={() => setPage({ name: 'drawings' })} style={{ width: '100%' }}>查看小样图</Btn>
           </div>
         </Card>
       </div>
 
-      <Card title="最近报价">
-        <DataTable
-          columns={[
-            { title: '订单号', key: '订单号', render: v => <span style={{ fontWeight: 700, color: C.blue }}>{v as string}</span> },
-            { title: '客户', key: '客户' },
-            { title: '日期', key: '日期' },
-            { title: '数量', key: '台计' },
-            { title: '状态', key: '状态', render: v => <Tag color={C.status[v as string] ?? C.textDim}>{v as string}</Tag> },
-          ]}
-          data={quotes as unknown as Record<string, unknown>[]}
-        />
+      {/* 报价明细表 */}
+      <Card title={
+        selectedDay
+          ? `报价明细 · ${selectedDay}（${filteredItems.length} 行）`
+          : `报价明细 · 近30天（${filteredItems.length} 行）`
+      }>
+        {filteredItems.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 30, color: C.textLight }}>
+            {selectedDay ? '当日无报价明细' : '近30天暂无报价明细'}
+          </div>
+        ) : (
+          <DataTable
+            columns={[
+              {
+                title: '订单号', key: '订单号',
+                render: (v, row) => {
+                  const q = quotes.find(x => x.id === (row._quoteId as string))
+                  return (
+                    <span
+                      style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace", cursor: q ? 'pointer' : 'default', textDecoration: q ? 'underline' : 'none' }}
+                      onClick={() => q && setPage({ name: 'quoteDetail', data: q })}
+                    >{v as string}</span>
+                  )
+                },
+              },
+              { title: '日期', key: '日期' },
+              { title: '客户', key: '客户' },
+              { title: '类型', key: '类型', render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
+              { title: '规格', key: '规格', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
+              { title: 'DN·压力', key: 'spec', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textDim }}>{v as string}</span> },
+              { title: '数量', key: '数量', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}</span> },
+              { title: '主体', key: '主体' },
+              { title: '件号', key: '件号', render: v => <Tag color={C.amber}>{v as string}</Tag> },
+              { title: '状态', key: '状态', render: v => <Tag color={C.status[v as string] ?? C.textDim}>{v as string}</Tag> },
+              {
+                title: '操作', key: '_quote',
+                render: (_v, row) => {
+                  const q = (row as { _quote?: Quote })._quote
+                  const pdf = (row as { _drawingPdf?: string | null })._drawingPdf
+                  return (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {q && (
+                        <span
+                          style={{ fontSize: 12, color: C.blue, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                          onClick={() => setPage({ name: 'quoteDetail', data: q })}
+                        >查看BOM</span>
+                      )}
+                      {pdf && (
+                        <span
+                          style={{ fontSize: 12, color: C.green, cursor: 'pointer', whiteSpace: 'nowrap' }}
+                          onClick={() => window.open(pdf, '_blank')}
+                        >预览小样图</span>
+                      )}
+                    </div>
+                  )
+                },
+              },
+            ]}
+            data={filteredItems}
+          />
+        )}
       </Card>
     </div>
   )
@@ -2581,11 +3416,12 @@ const NAV = [
   { id: 'quotes',      icon: '☰', label: '报价单',     group: '核心流程' },
   { id: 'quoteItems',  icon: '≡', label: '报价明细', group: '核心流程' },
   { id: 'drawings',    icon: '📐', label: '小样图库',   group: '数据管理' },
-  { id: 'valveParts',  icon: '⊞', label: '阀门零件库', group: '数据管理' },
-  { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },
   { id: 'paramLib',    icon: '◈', label: '参数库',     group: '数据管理' },
+  { id: 'params',      icon: '⬡', label: '参数组合库', group: '数据管理' },
   { id: 'rules',       icon: '☶', label: '规则库',     group: '数据管理' },
-  { id: 'params',      icon: '⬡', label: '历史参数组', group: '数据管理' },
+  { id: 'valveParts',  icon: '⊞', label: '零件库',     group: '数据管理' },
+  { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },
+  { id: 'dataInit',    icon: '⊕', label: '初始化',     group: '数据管理' },
 ]
 
 export function ValveQuoteApp() {
@@ -2637,17 +3473,18 @@ export function ValveQuoteApp() {
 
   const renderPage = () => {
     switch (page.name) {
-      case 'dashboard': return <PageDashboard params={params} quotes={quotes} setPage={setPage} />
+      case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setPage={setPage} />
       case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} />
-      case 'quotes': return <PageQuotes quotes={quotes} setPage={setPage} />
+      case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
       case 'quoteDetail': return <PageQuoteDetail quote={page.data} goBack={() => setPage({ name: 'quotes' })} drawings={drawings} />
-      case 'quoteItems': return <PageQuoteItems quotes={quotes} />
+      case 'quoteItems': return <PageQuoteItems quotes={quotes} drawings={drawings} setPage={setPage} />
       case 'params': return <PageParams params={params} />
       case 'drawings':   return <PageDrawings drawings={drawings} setDrawings={setDrawings} />
       case 'valveParts': return <PageValveParts />
       case 'bomList': return <PageBomList />
       case 'paramLib': return <PageParamLib paramLib={paramLib} setParamLib={setParamLib} />
       case 'rules': return <PageRules />
+      case 'dataInit': return <PageDataInit params={params} setParams={setParams} paramLib={paramLib} setParamLib={setParamLib} />
     }
   }
 
