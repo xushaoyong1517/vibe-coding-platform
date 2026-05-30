@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import fontkit from '@pdf-lib/fontkit'
 import { supabase } from '@/lib/supabase'
+import { getTenantId } from '@/lib/auth'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
@@ -23,11 +24,12 @@ async function getChineseFont(): Promise<ArrayBuffer | null> {
 
 function hasChinese(str: string) { return /[一-鿿]/.test(str) }
 
-async function buildPdf(id: string, fields: Record<string, string>, preview: boolean): Promise<NextResponse> {
+async function buildPdf(id: string, tenantId: string, fields: Record<string, string>, preview: boolean): Promise<NextResponse> {
   const { data: tpl, error: tplErr } = await supabase
     .from('drawing_templates')
     .select('*')
     .eq('id', id)
+    .eq('tenant_id', tenantId)
     .single()
   if (tplErr || !tpl) return NextResponse.json({ error: '模板不存在' }, { status: 404 })
   if (!tpl.pdf_url) return NextResponse.json({ error: '该模板尚未上传PDF' }, { status: 400 })
@@ -84,7 +86,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const preview = url.searchParams.get('mode') !== 'download'
     const fields: Record<string, string> = {}
     url.searchParams.forEach((v, k) => { if (k !== 'mode') fields[k] = v })
-    return await buildPdf(id, fields, preview)
+    return await buildPdf(id, getTenantId(req), fields, preview)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[fill GET] error:', msg)
@@ -99,7 +101,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const url = new URL(req.url)
     const preview = url.searchParams.get('mode') === 'preview'
     const body = await req.json() as Record<string, string>
-    return await buildPdf(id, body, preview)
+    return await buildPdf(id, getTenantId(req), body, preview)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[fill POST] error:', msg)

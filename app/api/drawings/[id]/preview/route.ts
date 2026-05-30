@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { getTenantId } from '@/lib/auth'
 
 interface BOMRow   { seq: number; name: string; material: string }
 interface DimRow   { nps: string; dn: number; L: number; D: number; D1: number; H: number; W: number; Wt: number }
@@ -227,6 +228,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     .from('drawing_templates')
     .select('*')
     .eq('id', id)
+    .eq('tenant_id', getTenantId(req))
     .single()
 
   if (error || !tpl) return NextResponse.json({ error: '模板不存在' }, { status: 404 })

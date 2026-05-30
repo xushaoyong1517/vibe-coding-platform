@@ -3,7 +3,12 @@ import { createHmac, scryptSync, randomBytes, timingSafeEqual } from 'crypto'
 // 轻量认证：签名 cookie 会话 + scrypt 密码哈希（均用 Node 内置，零依赖）。
 // 面向「客户试跑」：简单但 cookie 防篡改、密码加盐哈希。
 
-const SECRET = process.env.AUTH_SECRET || 'vq-dev-insecure-secret-change-me'
+const DEV_DEFAULT_SECRET = 'vq-dev-insecure-secret-change-me'
+const SECRET = process.env.AUTH_SECRET || DEV_DEFAULT_SECRET
+// 生产环境禁止使用默认密钥（否则 cookie 签名可被预测）
+if (SECRET === DEV_DEFAULT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('AUTH_SECRET 未配置：生产环境必须在环境变量中设置 AUTH_SECRET')
+}
 export const SESSION_COOKIE = 'vq_session'
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7 // 7 天
 
