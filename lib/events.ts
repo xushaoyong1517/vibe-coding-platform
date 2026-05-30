@@ -1,6 +1,22 @@
 // 事件流类型 + 纯函数辅助。前后端共用。
 
-export type EventType = 'bom_generated' | 'bom_confirmed' | 'quote_confirmed' | 'parameters_extracted'
+export type EventType = 'bom_generated' | 'bom_confirmed' | 'quote_confirmed' | 'parameters_extracted' | 'rule_applied'
+
+/**
+ * 「牌1直填零件 → 牌1字段位」映射。
+ * 只有这些零件的材质由 deriveBOM 直接从 牌1[族][位] 取值，
+ * 修正可无歧义地反写规则、一键固化。
+ * 阀座/阀瓣(基体+密封面复合)、阀杆/上密封座/填料压套(牌2驱动) 不在此列。
+ */
+export const PAI1_DIRECT_POSITION: Record<string, string> = {
+  '阀体': 'body', '阀盖': 'bonnet', '垫片': 'gasket', '螺柱': 'stud', '螺母': 'nut',
+  '填料': 'packing', '填料压板': 'packing_plate', '支架': 'yoke', '阀杆螺母': 'stem_nut', '手轮': 'handwheel',
+}
+
+/** 从 valve_spec(类型·主体·件号#) 取主体段 */
+export function specBody(valveSpec: string): string {
+  return (valveSpec.split('·')[1] || '').trim()
+}
 
 export interface EventInput {
   event_type: EventType

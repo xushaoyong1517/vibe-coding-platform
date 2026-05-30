@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getTenantId } from '@/lib/auth'
+import { loadRuleset } from '@/lib/load-ruleset'
+import { resolveFamily } from '@/lib/derive-bom'
+import { PAI1_DIRECT_POSITION, specBody } from '@/lib/events'
+
+const MIN_OCCURRENCES = 2  // 同一修正重复≥2次才升为建议
 
 // POST /api/events —— 追加一条事件（不可变）。租户由会话决定。
 export async function POST(req: Request) {
@@ -74,6 +79,54 @@ export async function GET(req: Request) {
       })
       .sort((x, y) => y.delta_count - x.delta_count || y.corrected - x.corrected)
     return NextResponse.json(rows)
+  }
+
+  // 可固化的修正建议：把「反复改成同一值」聚合，并标注能否一键反写牌1
+  if (searchParams.get('agg') === 'rule_suggestions') {
+    const { data, error } = await supabase
+      .from('events')
+      .select('valve_spec, actor, payload')
+      .eq('tenant_id', tenantId)
+      .eq('event_type', 'bom_confirmed')
+      .not('valve_spec', 'is', null)
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+
+    // 分组 key = valve_spec | 零件 | human_value（仅材质类）
+    type G = { valve_spec: string; 零件: string; human_value: string; count: number; actors: Set<string> }
+    const groups = new Map<string, G>()
+    for (const e of data ?? []) {
+      const deltas = (e.payload as { deltas?: { 零件: string; field: string; human_value: string }[] })?.deltas ?? []
+      for (const d of deltas) {
+        if (d.field !== '材质' || d.human_value == null) continue
+        const key = `${e.valve_spec}|${d.零件}|${d.human_value}`
+        let g = groups.get(key)
+        if (!g) { g = { valve_spec: e.valve_spec as string, 零件: d.零件, human_value: d.human_value, count: 0, actors: new Set() }; groups.set(key, g) }
+        g.count++; g.actors.add(e.actor)
+      }
+    }
+
+    const ruleset = await loadRuleset(tenantId)
+    const suggestions = []
+    for (const g of groups.values()) {
+      if (g.count < MIN_OCCURRENCES) continue
+      const position = PAI1_DIRECT_POSITION[g.零件]
+      let mappable = false, family: string | null = null, current_value: string | null = null
+      if (position && ruleset) {
+        family = resolveFamily(specBody(g.valve_spec), ruleset.pai1)
+        if (family) {
+          current_value = String((ruleset.pai1[family] as unknown as Record<string, unknown>)[position] ?? '')
+          mappable = current_value !== g.human_value  // 已等于则无需固化
+        }
+      }
+      suggestions.push({
+        valve_spec: g.valve_spec, 零件: g.零件, human_value: g.human_value,
+        count: g.count, actors: g.actors.size,
+        mappable, family, position: position ?? null, current_value,
+        reason: !position ? '复合/牌2驱动零件·需人工映射' : !ruleset ? '无规则' : !family ? '主体未匹配规则族' : !mappable ? '规则已是该值' : '可一键固化',
+      })
+    }
+    suggestions.sort((a, b) => Number(b.mappable) - Number(a.mappable) || b.count - a.count)
+    return NextResponse.json(suggestions)
   }
 
   // 原始事件列表（最近优先）

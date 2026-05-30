@@ -2827,28 +2827,56 @@ interface CorrectionRow {
   last: string
 }
 
+interface RuleSuggestion {
+  valve_spec: string; 零件: string; human_value: string
+  count: number; actors: number
+  mappable: boolean; family: string | null; position: string | null; current_value: string | null; reason: string
+}
+
 function PageLearning() {
   const [rows, setRows] = useState<CorrectionRow[]>([])
   const [recent, setRecent] = useState<Record<string, unknown>[]>([])
+  const [sugs, setSugs] = useState<RuleSuggestion[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
+  const [applying, setApplying] = useState<string | null>(null)
+  const [applyMsg, setApplyMsg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null)
     try {
-      const [aggRes, recRes] = await Promise.all([
+      const [aggRes, recRes, sugRes] = await Promise.all([
         fetch('/api/events?agg=valve_corrections'),
         fetch('/api/events?limit=30'),
+        fetch('/api/events?agg=rule_suggestions'),
       ])
       const agg = await aggRes.json()
       if (!aggRes.ok) throw new Error(agg.error || '加载失败')
       setRows(Array.isArray(agg) ? agg : [])
       const rec = await recRes.json()
       setRecent(Array.isArray(rec) ? rec : [])
+      const sug = await sugRes.json()
+      setSugs(Array.isArray(sug) ? sug : [])
     } catch (e) { setErr((e as Error).message) }
     setLoading(false)
   }, [])
   useEffect(() => { load() }, [load])
+
+  const applySuggestion = async (s: RuleSuggestion) => {
+    const key = `${s.valve_spec}|${s.零件}|${s.human_value}`
+    setApplying(key); setApplyMsg(null)
+    try {
+      const res = await fetch('/api/rulesets/apply-suggestion', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ valve_spec: s.valve_spec, 零件: s.零件, human_value: s.human_value }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || '固化失败')
+      setApplyMsg(`✅ 已固化：牌1·${d.family}.${d.position} ${d.from}→${d.to}（v${d.pai1_version}）`)
+      await load()
+    } catch (e) { setApplyMsg('固化失败：' + (e as Error).message) }
+    setApplying(null)
+  }
 
   const totalGen = rows.reduce((s, r) => s + r.generated, 0)
   const totalCorr = rows.reduce((s, r) => s + r.corrected, 0)
@@ -2878,6 +2906,47 @@ function PageLearning() {
           ))}
         </div>
         {err && <div style={{ fontSize: 12, color: '#c0392b', marginTop: 8 }}>{err}</div>}
+      </Card>
+
+      <Card title="可固化的修正建议" extra={<span style={{ fontSize: 12, color: C.textDim }}>反复改成同一值 ≥2 次</span>}>
+        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 10 }}>
+          系统把"被反复改成同一值"的修正升为建议。<b>牌1直填零件</b>（阀体/垫片/螺柱…）可<b>一键固化</b>进规则库新版本，从此自动出对；阀座/阀瓣/阀杆等复合或牌2驱动项只亮信号、需人工映射。
+        </div>
+        {applyMsg && <div style={{ fontSize: 12, color: applyMsg.startsWith('✅') ? C.green : '#c0392b', marginBottom: 8 }}>{applyMsg}</div>}
+        {sugs.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.textLight, padding: '8px 0' }}>暂无建议（同一处修正累计满 2 次后出现）。</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {sugs.map((s, i) => {
+              const key = `${s.valve_spec}|${s.零件}|${s.human_value}`
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px', borderRadius: 7, border: `1px solid ${s.mappable ? C.accent + '44' : C.borderLight}`, background: s.mappable ? '#fff7f2' : '#fafaf7' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13 }}>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>{s.valve_spec}</span>
+                      <span style={{ color: C.textDim }}> · </span>
+                      <span style={{ fontWeight: 600 }}>{s.零件}</span>
+                      <span style={{ color: C.textDim }}> 材质 → </span>
+                      <span style={{ color: C.accent, fontWeight: 700 }}>{s.human_value}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textLight, marginTop: 2 }}>
+                      被改 {s.count} 次 · {s.actors} 人
+                      {s.mappable && s.current_value != null && <> · 规则现值 <span style={{ color: C.textDim }}>{s.current_value || '—'}</span></>}
+                      {!s.mappable && <> · <span style={{ color: C.amber }}>{s.reason}</span></>}
+                    </div>
+                  </div>
+                  {s.mappable ? (
+                    <Btn small disabled={applying === key} onClick={() => applySuggestion(s)}>
+                      {applying === key ? '固化中…' : `⚙ 一键固化 牌1·${s.family}`}
+                    </Btn>
+                  ) : (
+                    <Tag color={C.textLight}>需人工映射</Tag>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
       </Card>
 
       <Card title="按阀型：系统最常猜错什么">
