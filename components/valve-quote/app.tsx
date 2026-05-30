@@ -4458,7 +4458,7 @@ export function ValveQuoteApp() {
           <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}><span style={{ color: C.accent }}>⬡</span> {auth.name}</div>
           <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>阀门智能报价 v2.0 · {auth.tenant_id}</div>
         </div>
-        <nav style={{ padding: '6px 0', flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        <nav className="vq-scroll-dark" style={{ padding: '6px 0', flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {NAV.map(n => {
             const active = page.name === n.id || (page.name === 'quoteDetail' && n.id === 'quotes')
             let groupLabel: string | null = null
@@ -4539,7 +4539,7 @@ export function ValveQuoteApp() {
       </div>
 
       {/* 主内容区 */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
+      <div className="vq-scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
         {(() => {
           // 详情页自带标题，不显示外层 h1
           const noHeader = ['quoteDetail', 'productDetail', 'dashboard'].includes(page.name)
