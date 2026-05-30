@@ -3,6 +3,14 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis } from 'recharts'
+import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-tables'
+import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
+
+// 事件流：不可变事实日志，fire-and-forget，绝不阻塞主流程
+function emitEvent(ev: EventInput) {
+  fetch('/api/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ev) })
+    .catch(() => { /* 事件采集失败不影响业务 */ })
+}
 
 // SKILL prompts 已移至服务端 app/api/claude/skills/
 // 客户端只传 skill 名称，不暴露提示词内容
@@ -35,6 +43,7 @@ interface QuoteItem {
 }
 
 interface ParamLibrary {
+  // BOM兼容字段（原有）
   类型: string[]
   DN: string[]
   压力: string[]
@@ -45,19 +54,35 @@ interface ParamLibrary {
   螺柱: string[]
   中腔填料: string[]
   件号: string[]
+  // 19位编码扩展字段
+  U1_特殊前缀: string[]
+  U6_密封面: string[]
+  U7_压力等级: string[]
+  U8_阀体代码: string[]
+  U10_端面: string[]
+  U13_阀杆代码: string[]
+  U14_内件代码: string[]
+  U19_特殊要求: string[]
 }
 
-const PARAM_LIB_TABS: { key: keyof ParamLibrary; label: string }[] = [
-  { key: '类型',    label: '类型' },
-  { key: 'DN',      label: 'DN' },
-  { key: '压力',    label: '压力' },
-  { key: '主体',    label: '主体' },
-  { key: '阀瓣阀闸', label: '阀瓣/阀闸' },
-  { key: '阀座',    label: '阀座' },
-  { key: '阀杆轴',  label: '阀杆/轴' },
-  { key: '螺柱',    label: '螺柱' },
-  { key: '中腔填料', label: '填料' },
-  { key: '件号',    label: '件号' },
+const PARAM_LIB_TABS: { key: keyof ParamLibrary; label: string; group?: string }[] = [
+  // BOM参数
+  { key: '类型',    label: '类型',    group: 'BOM' },
+  { key: 'DN',      label: 'DN',      group: 'BOM' },
+  { key: '压力',    label: '压力',    group: 'BOM' },
+  { key: '主体',    label: '主体',    group: 'BOM' },
+  { key: '件号',    label: '件号',    group: 'BOM' },
+  { key: '阀杆轴',  label: '阀杆/轴', group: 'BOM' },
+  { key: '螺柱',    label: '螺柱',    group: 'BOM' },
+  // 19位编码参数
+  { key: 'U1_特殊前缀', label: 'U1 特殊', group: '19位' },
+  { key: 'U6_密封面',   label: 'U6 密封面', group: '19位' },
+  { key: 'U7_压力等级', label: 'U7 压力级', group: '19位' },
+  { key: 'U8_阀体代码', label: 'U8 阀体', group: '19位' },
+  { key: 'U10_端面',    label: 'U10 端面', group: '19位' },
+  { key: 'U13_阀杆代码', label: 'U13 阀杆', group: '19位' },
+  { key: 'U14_内件代码', label: 'U14 内件', group: '19位' },
+  { key: 'U19_特殊要求', label: 'U19 特殊', group: '19位' },
 ]
 
 const API_TRIM_NUMBERS = ['1#','2#','3#','4#','5#','6#','7#','8#','9#','10#','11#','12#','13#','14#','15#','16#','17#','18#']
@@ -66,6 +91,7 @@ function initParamLib(params: Param[]): ParamLibrary {
   const uniq = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort()
   const numSort = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort((a, b) => Number(a) - Number(b))
   const trimSort = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort((a, b) => parseInt(a) - parseInt(b))
+  const uPressSort = (arr: string[]) => [...new Set(arr)].filter(Boolean).sort((a, b) => parseInt(a) - parseInt(b))
   return {
     类型:    uniq(params.map(p => p.类型)),
     DN:       numSort(params.map(p => String(p.DN))),
@@ -77,6 +103,15 @@ function initParamLib(params: Param[]): ParamLibrary {
     螺柱:    uniq(params.map(p => p.螺柱)),
     中腔填料: uniq(params.map(p => p.中腔填料)),
     件号:    trimSort([...API_TRIM_NUMBERS, ...params.map(p => p.件号)]),
+    // 19位编码参数值（从产品库派生）
+    U1_特殊前缀: uniq(params.map(p => p.U1 ?? '')),
+    U6_密封面:   uniq(params.map(p => p.U6 ?? '')),
+    U7_压力等级: uPressSort(params.map(p => p.U6 ? (p.压力 + 'Lb') : '')),
+    U8_阀体代码: uniq(params.map(p => p.U8 ?? '')),
+    U10_端面:    uniq(params.map(p => p.U10 ?? '')),
+    U13_阀杆代码: uniq(params.map(p => p.U13 ?? '')),
+    U14_内件代码: uniq(params.map(p => p.U14 ?? '')),
+    U19_特殊要求: uniq(params.map(p => p.U19 ?? '')),
   }
 }
 
@@ -93,7 +128,7 @@ interface BOMResult {
   bom: BOMRow[]
   牌1: string
   牌2: string
-  来源?: 'exact' | 'fuzzy' | 'ai' | 'template'
+  来源?: 'exact' | 'fuzzy' | 'ai' | 'template' | 'rule'
   历史次数?: number
   差异字段?: string[]
   drawing_id?: string    // 生成时匹配到的小样图 ID（不论是否用了骨架）
@@ -116,6 +151,7 @@ interface Quote {
 
 interface Param {
   id: string
+  // BOM兼容字段（原有）
   类型: string
   DN: number
   压力: number
@@ -131,6 +167,42 @@ interface Param {
   件号: string
   次数: number
   数量: number
+  工厂编号?: string
+  // 19位编码扩展字段（完整）
+  full_code?: string   // 完整编码 e.g. Z61H-800LbC-15-S0A0203A00A00-00
+  U1?: string          // 特殊前缀: ''/'D'/'K'/'W'...
+  U2?: string          // 阀门类型: 'Z'/'J'/'H'/'Q'...
+  U3?: string          // 驱动: ''/'6'/'9'...
+  U4?: string          // 连接: '4'/'6'/'1'...
+  U5?: string          // 结构: '0'/'1'/'2'...
+  U6?: string          // 密封面: 'H'/'W'/'Y1'/'Y2'...
+  U7?: string          // 压力代码: '600Lb'/'800Lb'...
+  U8?: string          // 阀体代码: 'C'/'C2'/'P'/'V3'...
+  U10?: string         // 端面: 'S'/'B'/'R'/'J'
+  U11?: string         // 阀盖: '0'/'1'/'2'
+  U12?: string         // 流道: 'A'/'Q'/'S'
+  U13?: string         // 阀杆代码: '00'/'02'/'03'/'04'
+  U14?: string         // 内件代码: '00'/'03'/'04'/'05'
+  U15?: string         // 波纹管: 'A'/'B'...
+  U16?: string         // 垫片: '00'/'01'...
+  U17?: string         // 填料: 'A'/'B'...
+  U18?: string         // 螺柱代码: '00'/'01'...
+  U19?: string         // 特殊要求: '00'/'31'/'0631'...
+}
+
+// 阀门产品库（Supabase落库版）
+interface ValveProduct {
+  id: string         // 序号/组别，即item_id
+  U1: string; U2: string; U3: string; U4: string; U5: string
+  U6: string; U7: string; U8: string; U9: number; U10: string
+  U11: string; U12: string; U13: string; U14: string; U15: string
+  U16: string; U17: string; U18: string; U19: string
+  full_code?: string
+  name?: string      // 阀门名称
+  note?: string      // 备注
+  来源?: string       // 数据来源
+  下单次数?: number   // 历史下单次数
+  created_at?: string
 }
 
 interface TrimRow {
@@ -428,11 +500,14 @@ type PageState =
   | { name: 'quoteDetail'; data: Quote }
   | { name: 'quoteItems' }
   | { name: 'params' }
+  | { name: 'productDetail'; data: ValveProduct }
   | { name: 'paramLib' }
+  | { name: 'valveCodeRef' }
   | { name: 'valveParts' }
   | { name: 'bomList' }
   | { name: 'drawings' }
   | { name: 'rules' }
+  | { name: 'learning' }
   | { name: 'dataInit' }
 
 // ════════════════════════════════════════════════════
@@ -511,40 +586,96 @@ function validateItem(item: QuoteItem): ValidationIssue[] {
 // SEED DATA
 // ════════════════════════════════════════════════════
 
-const SEED_PARAMS: Param[] = [
-  // 闸阀（来自2026年订单统计）
-  { id: 'g01', 类型: '闸阀', DN: 50,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 11, 数量: 151 },
-  { id: 'g02', 类型: '闸阀', DN: 50,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+STL',  阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '5#', 次数: 8,  数量: 120 },
-  { id: 'g03', 类型: '闸阀', DN: 50,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'CF8', 阀瓣阀闸: 'CF8+STL',  阀座: '本体+STL', 阀杆轴: 'F304', 螺柱: 'B8/8', 中腔填料: '316+石墨', 设计标准: 'API 600', 件号: '15#', 次数: 4, 数量: 18 },
-  { id: 'g04', 类型: '闸阀', DN: 50,  压力: 300, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 10, 数量: 72 },
-  { id: 'g05', 类型: '闸阀', DN: 50,  压力: 600, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 2,  数量: 8 },
-  { id: 'g06', 类型: '闸阀', DN: 80,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 10, 数量: 145 },
-  { id: 'g07', 类型: '闸阀', DN: 80,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+STL',  阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '5#', 次数: 11, 数量: 156 },
-  { id: 'g08', 类型: '闸阀', DN: 80,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'CF8', 阀瓣阀闸: 'CF8+STL',  阀座: '本体+STL', 阀杆轴: 'F304', 螺柱: 'B8/8', 中腔填料: '316+石墨', 设计标准: 'API 600', 件号: '15#', 次数: 3, 数量: 9 },
-  { id: 'g09', 类型: '闸阀', DN: 100, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 17, 数量: 313 },
-  { id: 'g10', 类型: '闸阀', DN: 100, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+STL',  阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '5#', 次数: 11, 数量: 439 },
-  { id: 'g11', 类型: '闸阀', DN: 100, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'CF3', 阀瓣阀闸: 'CF3+STL',  阀座: '本体+STL', 阀杆轴: 'F304L', 螺柱: 'B8/8', 中腔填料: '316+石墨', 设计标准: 'API 600', 件号: '15#', 次数: 2, 数量: 6 },
-  { id: 'g12', 类型: '闸阀', DN: 100, 压力: 300, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 8,  数量: 45 },
-  { id: 'g13', 类型: '闸阀', DN: 150, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 7,  数量: 101 },
-  { id: 'g14', 类型: '闸阀', DN: 150, 压力: 300, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 7,  数量: 65 },
-  { id: 'g15', 类型: '闸阀', DN: 200, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 10, 数量: 79 },
-  { id: 'g16', 类型: '闸阀', DN: 200, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+STL',  阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '5#', 次数: 4,  数量: 28 },
-  { id: 'g17', 类型: '闸阀', DN: 200, 压力: 300, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 7,  数量: 51 },
-  { id: 'g18', 类型: '闸阀', DN: 250, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 5,  数量: 35 },
-  { id: 'g19', 类型: '闸阀', DN: 300, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: 'A105+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 3,  数量: 12 },
-  // 截止阀
-  { id: 'j01', 类型: '截止阀', DN: 50,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'A105+13Cr', 阀座: '本体+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 6, 数量: 21 },
-  { id: 'j02', 类型: '截止阀', DN: 50,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'CF8', 阀瓣阀闸: 'F304',      阀座: '本体+STL', 阀杆轴: 'F304', 螺柱: 'B8/8', 中腔填料: '316+石墨', 设计标准: 'API 600', 件号: '2#', 次数: 1, 数量: 4 },
-  { id: 'j03', 类型: '截止阀', DN: 50,  压力: 300, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'A105+13Cr', 阀座: '本体+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 3, 数量: 6 },
-  { id: 'j04', 类型: '截止阀', DN: 80,  压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'A105+13Cr', 阀座: '本体+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 4, 数量: 12 },
-  { id: 'j05', 类型: '截止阀', DN: 100, 压力: 150, 驱动: '手轮', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'A105+13Cr', 阀座: '本体+STL', 阀杆轴: 'F6a', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 600', 件号: '8#', 次数: 3, 数量: 8 },
-  // 止回阀
-  { id: 'h01', 类型: '止回阀', DN: 50,  压力: 150, 驱动: '/', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+STL',  阀座: '本体+STL', 阀杆轴: '/', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 594', 件号: '5#', 次数: 2, 数量: 6 },
-  { id: 'h02', 类型: '止回阀', DN: 80,  压力: 150, 驱动: '/', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: '本体+STL', 阀杆轴: '/', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 594', 件号: '8#', 次数: 5, 数量: 30 },
-  { id: 'h03', 类型: '止回阀', DN: 100, 压力: 150, 驱动: '/', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: '本体+STL', 阀杆轴: '/', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 594', 件号: '8#', 次数: 3, 数量: 15 },
-  { id: 'h04', 类型: '止回阀', DN: 150, 压力: 150, 驱动: '/', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: '本体+STL', 阀杆轴: '/', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 594', 件号: '8#', 次数: 3, 数量: 10 },
-  { id: 'h05', 类型: '止回阀', DN: 200, 压力: 150, 驱动: '/', 连接: 'RF', 主体: 'WCB', 阀瓣阀闸: 'WCB+13Cr', 阀座: '本体+STL', 阀杆轴: '/', 螺柱: 'B7/2H', 中腔填料: '304+石墨', 设计标准: 'API 594', 件号: '8#', 次数: 2, 数量: 8 },
-]
+// ── 19位编码解码辅助 ──────────────────────────────────────
+const U8_BODY_MAP: Record<string, string> = {
+  C: 'WCB', C2: 'LF2/LCB', P: '304/CF8', L: '316L/CF3M',
+  L1: '304L/CF3', R: '316/CF8M', V3: 'F11/WC6', V4: 'F22/WC9',
+}
+const U10_CONN_MAP: Record<string, string> = { S: 'SW', B: 'BW', R: 'RF', J: 'RTJ', A: 'FF' }
+const U13_STEM_MAP: Record<string, string> = {
+  '00': '', '02': 'F304', '03': 'F304L', '04': 'F316', '05': 'F316L', '12': 'F11', '13': 'F22',
+}
+
+// type: [id, U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U14, U15, U16, U17, U18, U19, full_code]
+type ProductRow = [string,string,string,string,string,string,string,string,string,number,string,string,string,string,string,string,string,string,string,string,string]
+
+function decodeProduct([id,U1,U2,U3,U4,U5,U6,U7,U8,U9,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,full_code]: ProductRow): Param {
+  const 主体 = U8_BODY_MAP[U8] || U8
+  const 压力 = parseInt(U7)
+  const 连接 = U10_CONN_MAP[U10] || U10
+  const stemCode = U13_STEM_MAP[U13] || ''
+
+  // 派生件号
+  let 件号 = '1#'
+  if (U6 === 'Y2') {
+    if (['L', 'R'].includes(U8)) 件号 = '16#'
+    else if (['P', 'L1'].includes(U8)) 件号 = '15#'
+    else 件号 = '5#'
+  } else if (U6 === 'W') {
+    if (['P', 'L1'].includes(U8)) 件号 = (U14 === '04' || U14 === '06') ? '10#' : '2#'
+    else if (['L', 'R'].includes(U8)) 件号 = '10#'
+    else if (U8 === 'C2') 件号 = '2#'
+    else 件号 = '1#'
+  }
+
+  const 阀杆轴 = stemCode || (['P', 'L1'].includes(U8) ? 'F304' : ['L', 'R'].includes(U8) ? 'F316' : ['V3', 'V4'].includes(U8) ? 'F11' : 'F6a')
+  const isForged = U9 <= 40
+  const bodyBase = U8 === 'C' ? (isForged ? 'A105' : 'WCB') : U8 === 'C2' ? (isForged ? 'A350LF2' : 'LF2') : U8 === 'V3' ? (isForged ? 'A182F11' : 'WC6') : 主体
+
+  let 阀瓣阀闸 = '', 阀座 = ''
+  if (件号 === '5#') { 阀瓣阀闸 = bodyBase + '+STL'; 阀座 = bodyBase + '+STL' }
+  else if (件号 === '8#') { 阀瓣阀闸 = bodyBase + '+13Cr'; 阀座 = bodyBase + '+STL' }
+  else if (件号 === '1#') { 阀瓣阀闸 = bodyBase + '+13Cr'; 阀座 = bodyBase + '+13Cr' }
+  else if (件号 === '2#') { 阀瓣阀闸 = 'CF8(本体)'; 阀座 = '本体' }
+  else if (件号 === '10#') { 阀瓣阀闸 = 'CF8M(本体)'; 阀座 = '316L' }
+  else if (件号 === '15#') { 阀瓣阀闸 = 'CF8+STL'; 阀座 = 'CF8+STL' }
+  else if (件号 === '16#') { 阀瓣阀闸 = 'CF8M+STL'; 阀座 = 'CF8M+STL' }
+
+  const 螺柱 = ['P', 'L1', 'L'].includes(U8) ? 'A320 B8' : ['R'].includes(U8) ? 'A193 B8M' : ['V3', 'V4'].includes(U8) ? 'A193 B16' : 'A193 B7'
+  const 中腔填料 = ['L', 'R'].includes(U8) ? '316+柔性石墨' : '304+柔性石墨'
+  const 设计标准 = (['SW', 'BW'].includes(U10_CONN_MAP[U10] || '') && 压力 >= 800) ? 'API 602' : 'API 600'
+
+  return {
+    id: `p${id}`, 次数: 0, 数量: 1, 类型: '闸阀',
+    DN: U9, 压力, 驱动: '手轮', 连接, 主体,
+    阀瓣阀闸, 阀座, 阀杆轴, 螺柱, 中腔填料, 设计标准, 件号,
+    工厂编号: full_code.split('-').slice(0, 3).join('-'),
+    full_code, U1, U2, U3, U4, U5, U6, U7: U7, U8, U10, U11, U12, U13, U14, U15, U16, U17, U18, U19,
+  }
+}
+
+// ── 郑浩林6.17高压闸阀询价 · 28个产品（按CSV原始数据）────
+// 列: [item_id, U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U14, U15, U16, U17, U18, U19, full_code]
+const SEED_PARAMS: Param[] = ([
+  ['103030380', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   15, 'S', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-15-S0A0203A00A00-00'],
+  ['103031101', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '31',   'Z61W-800LbP-15-B0A0203A00A00-31'],
+  ['103031681', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-15-B0A0203A00A00-00'],
+  ['103031363', 'D', 'Z', '', '6', '1', 'W',  '800Lb',  'C2',  15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '0631', 'DZ61W-800LbC2-15-B0A0203A00A00-0631'],
+  ['103030299', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   25, 'S', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-25-S0A0000A00A00-00'],
+  ['103030277', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   20, 'S', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-20-S0A0000A00A00-00'],
+  ['103030375', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   15, 'S', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-15-S0A0000A00A00-00'],
+  ['103031227', 'K', 'Z', '', '6', '1', 'W',  '800Lb',  'L1',  15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'KZ61W-800LbL1-15-B0A0000A00A00-00'],
+  ['103030927', '',  'Z', '', '4', '0', 'Y2', '600Lb',  'C',  100, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z40Y2-600LbC-100-R0A0000A00A00-00'],
+  ['103031252', '',  'Z', '', '4', '0', 'Y2', '600Lb',  'C',   80, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z40Y2-600LbC-80-R0A0000A00A00-00'],
+  ['103031697', '',  'Z', '', '6', '0', 'Y2', '600Lb',  'C',   50, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z60Y2-600LbC-50-B0A0000A00A00-00'],
+  ['103030766', '',  'Z', '', '4', '0', 'Y2', '600Lb',  'C',   50, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z40Y2-600LbC-50-R0A0000A00A00-00'],
+  ['103030754', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'C',   25, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbC-25-R0A0000A00A00-00'],
+  ['103030930', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'C',   20, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbC-20-R0A0000A00A00-00'],
+  ['103031057', '',  'Z', '', '6', '1', 'Y2', '800Lb',  'C',   15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61Y2-800LbC-15-B0A0000A00A00-00'],
+  ['103030774', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'C',   15, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbC-15-R0A0000A00A00-00'],
+  ['103031696', '',  'Z', '', '6', '1', 'Y2', '800Lb',  'L',   15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61Y2-800LbL-15-B0A0000A00A00-00'],
+  ['103031098', 'K', 'Z', '', '6', '1', 'Y2', '800Lb',  'L1',  15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'KZ61Y2-800LbL1-15-B0A0000A00A00-00'],
+  ['103031376', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'P',   25, 'R', '0', 'A', '03', '05', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbP-25-R0A0305A00A00-00'],
+  ['103030482', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   25, 'S', '0', 'A', '04', '04', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-25-S0A0404A00A00-00'],
+  ['103031229', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   20, 'S', '0', 'A', '04', '04', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-20-S0A0404A00A00-00'],
+  ['103030387', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   15, 'S', '0', 'A', '04', '04', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-15-S0A0404A00A00-00'],
+  ['103031323', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'P',   20, 'R', '0', 'A', '03', '05', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbP-20-R0A0305A00A00-00'],
+  ['103030390', '',  'Z', '', '6', '1', 'Y2', '800Lb',  'R',   15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61Y2-800LbR-15-B0A0000A00A00-00'],
+  ['103031700', '',  'Z', '', '6', '0', 'Y2', '900Lb',  'V3',  80, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z60Y2-900LbV3-80-B0A0203A00A00-00'],
+  ['103031689', '',  'Z', '', '4', '1', 'Y2', '900Lb',  'V3',  20, 'J', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z41Y2-900LbV3-20-J0A0203A00A00-00'],
+  ['103031688', '',  'Z', '', '4', '1', 'Y2', '1500Lb', 'V3',  20, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z41Y2-1500LbV3-20-B0A0203A00A00-00'],
+  ['103031687', '',  'Z', '', '4', '1', 'Y2', '1500Lb', 'V3',  15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z41Y2-1500LbV3-15-B0A0203A00A00-00'],
+] as ProductRow[]).map(decodeProduct)
 
 const SEED_QUOTES: Quote[] = [
   {
@@ -869,7 +1000,7 @@ function ImageDropZone({ preview, onImage }: {
 // PAGE: 新建报价（核心三步流程）
 // ════════════════════════════════════════════════════
 
-function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams, setParamLib, setPage, 业务员 }: {
+function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams, setParamLib, setPage, 业务员, tenantId }: {
   params: Param[]
   quotes: Quote[]
   paramLib: ParamLibrary
@@ -879,6 +1010,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   setParamLib: React.Dispatch<React.SetStateAction<ParamLibrary>>
   setPage: (p: PageState) => void
   业务员: string
+  tenantId: string
 }) {
   const [step, setStep] = useState(0)
   const [input, setInput] = useState('')
@@ -897,6 +1029,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   const [bomEditIdx, setBomEditIdx] = useState<number | null>(null)
   const [bomEditRows, setBomEditRows] = useState<BOMRow[] | null>(null)
   const [saveForm, setSaveForm] = useState({ 客户: '', 联系人: '', 交期: '' })
+  const [correlationId, setCorrelationId] = useState<string>('')  // 一次报价会话，串起事件闭环
   useEffect(() => {
     setSaveForm(prev => prev.交期 ? prev : { ...prev, 交期: new Date().toISOString().slice(0, 10) })
   }, [])
@@ -927,6 +1060,19 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   }
   const saveBomEdit = () => {
     if (bomEditIdx === null || !bomEditRows) return
+    const before = bomResults![bomEditIdx]          // 系统提议（编辑前）
+    const deltas = diffBomRows(before.bom, bomEditRows)
+    // 事件：人工修正 BOM（含行级 delta）—— 飞轮的监督样本
+    if (deltas.length > 0) {
+      emitEvent({
+        event_type: 'bom_confirmed', actor: 业务员 || '业务员',
+        correlation_id: correlationId || ('c' + Date.now()),
+        valve_spec: valveSpec(before.item),
+        refs: { code: before.item.工厂编号, DN: before.item.DN },
+        payload: { deltas, line_count: bomEditRows.length },
+        provenance: { corrected_from: before.来源 },  // 改的是哪种来源的提议
+      })
+    }
     setBomResults(prev => {
       if (!prev) return prev
       const next = [...prev]
@@ -1081,6 +1227,9 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
     if (!extracted) return
     setLoading(true); setError(null)
     const total = extracted.length
+    // 一次报价会话的关联ID（串起本轮所有事件）
+    const corr = correlationId || ('c' + Date.now())
+    if (!correlationId) setCorrelationId(corr)
     try {
       const results: BOMResult[] = []
       for (let i = 0; i < extracted.length; i++) {
@@ -1097,29 +1246,44 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
           setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}（历史匹配）` })
           continue
         }
-        // Step 2：匹配产品模板骨架（有则带骨架调 AI，无则 AI 从零生成）
+        // Step 2：匹配产品模板骨架
         const tpl = matchDrawing(item, drawings)
-        const aiPayload: Record<string, unknown> = { ...item }
-        if (tpl?.bom_template?.length) {
-          aiPayload.bom_template = tpl.bom_template
-          aiPayload.template_name = tpl.name
-          if (tpl.rules) aiPayload.template_rules = tpl.rules
-        }
-        // 如果初始化导入了规则表，追加到 payload 覆盖默认表
+        const hasTpl = !!tpl?.bom_template?.length
+
+        // Step 2a：确定性合成（DB 牌1/牌2，零幻觉、零 token）
+        //   有模板骨架 → 确定性模板填充；无 → 标准 15 行
         try {
-          const rt1 = localStorage.getItem('ruleTable1')
-          const rt2 = localStorage.getItem('ruleTable2')
-          if (rt1) aiPayload._rule_table_1_override = JSON.parse(rt1)
-          if (rt2) aiPayload._rule_table_2_override = JSON.parse(rt2)
-        } catch { /* ignore */ }
+          const dr = await fetch('/api/bom/derive', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(hasTpl ? { ...item, bom_template: tpl!.bom_template } : { 主体: item.主体, 件号: item.件号, DN: item.DN }),
+          })
+          const d = await dr.json()
+          if (d.ok && d.bom?.length) {
+            results.push({
+              item, bom: d.bom, 牌1: d.牌1, 牌2: d.牌2,
+              来源: hasTpl ? 'template' : 'rule',
+              drawing_id: tpl?.id, drawing_name: tpl?.name,
+            })
+            setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}（${hasTpl ? '模板·确定性' : '规则合成'}）` })
+            continue
+          }
+        } catch { /* 端点失败 → 落到下方 AI 兜底 */ }
+
+        // Step 2b：确定性未命中（未知材质/件号且无模板）→ AI 兜底
+        const aiPayload: Record<string, unknown> = { ...item }
+        if (hasTpl) {
+          aiPayload.bom_template = tpl!.bom_template
+          aiPayload.template_name = tpl!.name
+          if (tpl!.rules) aiPayload.template_rules = tpl!.rules
+        }
         if (i > 0) await new Promise(r => setTimeout(r, 800))
-        const src = tpl?.bom_template?.length ? `模板「${tpl.name}」` : 'AI 从零生成'
+        const src = hasTpl ? `模板「${tpl!.name}」` : 'AI 兜底'
         setProgress({ pct: Math.round((i / total) * 90) + 5, label: `${src}：${item.类型} DN${item.DN} ${item.主体}…` })
         const raw = await callAI('bom-generate', JSON.stringify(aiPayload))
         const parsed = parseJSON(raw)
         results.push({
           item, bom: parsed?.bom || [], 牌1: parsed?.牌1 || '', 牌2: parsed?.牌2 || '',
-          来源: tpl?.bom_template?.length ? 'template' : 'ai',
+          来源: hasTpl ? 'template' : 'ai',
           drawing_id: tpl?.id,
           drawing_name: tpl?.name,
         })
@@ -1127,6 +1291,17 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       }
       setProgress({ pct: 100, label: `全部完成，共 ${total} 条` })
       setBomResults(results); setStep(2)
+      // 事件：系统提议 BOM（provenance = 来源）。历史匹配不算"提议"，跳过。
+      for (const r of results) {
+        if (r.来源 === 'exact' || r.来源 === 'fuzzy') continue
+        emitEvent({
+          event_type: 'bom_generated', actor: 'system', correlation_id: corr,
+          valve_spec: valveSpec(r.item),
+          refs: { code: r.item.工厂编号, DN: r.item.DN },
+          payload: { line_count: r.bom.length, 牌1: r.牌1, 牌2: r.牌2 },
+          provenance: { source: r.来源, drawing: r.drawing_name },
+        })
+      }
     } catch (e) { setError('BOM 生成失败: ' + (e as Error).message) }
     setLoading(false)
     setTimeout(() => setProgress(null), 800)
@@ -1181,8 +1356,8 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
 
     // 持久化到 Supabase
     const [qRes, pRes] = await Promise.all([
-      supabase.from('quotes').insert({ id: newQuote.id, salesperson: 业务员, data: newQuote }),
-      supabase.from('params').upsert(upsertRows.map(p => ({ id: p.id, data: p, updated_at: new Date().toISOString() }))),
+      supabase.from('quotes').insert({ id: newQuote.id, salesperson: 业务员, data: newQuote, tenant_id: tenantId }),
+      supabase.from('params').upsert(upsertRows.map(p => ({ id: p.id, data: p, updated_at: new Date().toISOString(), tenant_id: tenantId }))),
     ])
     if (qRes.error) {
       console.error('[handleSave] quotes insert error:', qRes.error)
@@ -1190,6 +1365,16 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       return
     }
     if (pRes.error) console.warn('[handleSave] params upsert error:', pRes.error)
+
+    // 事件：报价单已确认（闭环终点；后续 QuoteWon/Lost 提供定价真值）
+    emitEvent({
+      event_type: 'quote_confirmed', actor: 业务员 || '业务员',
+      correlation_id: correlationId || ('c' + Date.now()), quote_id: newQuote.id,
+      valve_spec: extracted[0] ? valveSpec(extracted[0]) : undefined,
+      refs: { customer: newQuote.客户 },
+      payload: { items: extracted.length, 台计: newQuote.台计, specs: extracted.map(valveSpec) },
+    })
+    setCorrelationId('')  // 闭环结束，下次报价开新会话
 
     // 更新本地状态
     setQuotes(prev => [newQuote, ...prev])
@@ -1485,6 +1670,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                           )}
                         </span>
                       )}
+                      {r.来源 === 'rule' && <Tag color={C.green}>⚙ 规则合成（牌1/牌2·确定性）</Tag>}
                       {r.来源 === 'template' && <Tag color={C.green}>📐 {r.drawing_name ?? '模板'}</Tag>}
                       {r.来源 === 'ai' && r.drawing_id && (
                         <Tag color={C.amber}>⚠ 已匹配「{r.drawing_name}」但无BOM骨架，AI自由生成</Tag>
@@ -2482,42 +2668,355 @@ function PageDataInit({
 }
 
 // ════════════════════════════════════════════════════
+// PAGE: 阀门参数库（19单元编码对照表）
+// ════════════════════════════════════════════════════
 
-function PageRules() {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <Card title="规则表1：零部件材质表" extra={<span style={{ fontSize: 12, color: C.textDim }}>牌1 · 主体材质→组件</span>}>
-        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>给定主体材质列，查对应行得到10个组件材质</div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: '#f5f5f0' }}>
-                {['#', '零件', '碳钢 WCB', '镍铬 WC6', '304 CF8', '316 CF8M', '低温 LCB', 'Monel'].map((h, i) => (
-                  <th key={i} style={{ padding: '6px 8px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+function ValveTableDetail({ table, search }: { table: typeof VALVE_CODE_TABLES[0]; search: string }) {
+    const q = search.trim().toLowerCase()
+    const entries = q
+      ? table.entries.filter(e =>
+          e.code.toLowerCase().includes(q) || e.cn.includes(q) ||
+          e.en.toLowerCase().includes(q) || (e.note ?? '').toLowerCase().includes(q))
+      : table.entries
+
+    const hasGroup = entries.some(e => e.group)
+    const grouped = hasGroup ? entries.reduce((m, e) => {
+      const g = e.group ?? '其他'
+      if (!m[g]) m[g] = []
+      m[g].push(e); return m
+    }, {} as Record<string, typeof entries>) : null
+
+    const tdS: React.CSSProperties = { padding: '4px 10px', borderBottom: `1px solid ${C.borderLight}`, fontSize: 12 }
+
+    return (
+      <div style={{ padding: '12px 16px 16px', background: '#f9fafb', borderRadius: '0 0 8px 8px' }}>
+        {grouped ? (
+          Object.entries(grouped).map(([g, rows]) => (
+            <div key={g} style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: C.textDim, letterSpacing: '0.05em',
+                textTransform: 'uppercase', marginBottom: 6 }}>{g}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {rows.map((e, i) => (
+                  <span key={i} title={e.en}
+                    style={{ padding: '2px 8px', borderRadius: 4, fontSize: 12, background: '#fff',
+                      border: `1px solid ${C.border}`, cursor: 'default' }}>
+                    <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: C.accent, marginRight: 4 }}>{e.code}</span>
+                    {e.cn}
+                  </span>
                 ))}
+              </div>
+            </div>
+          ))
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: '#f0f0eb' }}>
+                <th style={{ ...tdS, fontWeight: 700, width: 70, borderBottom: `1px solid ${C.border}` }}>代号</th>
+                <th style={{ ...tdS, fontWeight: 700, borderBottom: `1px solid ${C.border}` }}>中文名称</th>
+                <th style={{ ...tdS, fontWeight: 700, color: C.textDim, borderBottom: `1px solid ${C.border}` }}>English</th>
+                {entries.some(e => e.note) && <th style={{ ...tdS, fontWeight: 700, color: C.textDim, borderBottom: `1px solid ${C.border}`, width: 180 }}>说明</th>}
               </tr>
             </thead>
             <tbody>
-              {[
-                ['1', '阀体', 'A216 WCB/A105', 'A217 WC6', 'A351 CF8/F304', 'A351 CF8M', 'LCB/LF2', 'Monel'],
-                ['2', '阀盖', '同阀体', '同阀体', '同阀体', '同阀体', '同阀体', '同阀体'],
-                ['3', '阀座', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2'],
-                ['4', '阀瓣', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2'],
-                ['5', '阀杆', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2'],
-                ['6', '填料', '304+石墨', '304+石墨', '304+石墨', '304+石墨', '316+石墨', '316+石墨'],
-                ['7', '螺柱', 'A193 B7', 'A193 B16', 'A320 B8', 'A193 B8M', 'A320-L7', 'A193 B8M'],
-                ['8', '螺母', 'A194 2H', 'A194-4', 'A194-8', 'A194-8M', 'A194-4', 'A194-8M'],
-                ['9', '填料', '石墨+缠绕', '同左', '同左', '同左', '同左', '同左'],
-                ['10', '填料压套', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2', '→牌2'],
-                ['11', '填料压板', '同阀体', '同阀体', '同阀体', '同阀体', '同阀体', '同阀体'],
-                ['12', '支承', '同阀体', '同阀体', '同阀体', '同阀体', '同阀体', '同阀体'],
-                ['13', '阀杆螺母', 'ZQAL9-4', '同左', '同左', '同左', '同左', '同左'],
-                ['14', '手轮', 'KTH350-10', '同左', '同左', '同左', '同左', '同左'],
-              ].map((r, ri) => (
-                <tr key={ri} style={{ background: r[2]?.startsWith('→') ? '#fff8e1' : 'transparent', borderBottom: `1px solid ${C.borderLight}` }}>
-                  {r.map((v, ci) => (
-                    <td key={ci} style={{ padding: '5px 8px', fontWeight: ci === 1 ? 600 : 400, color: v?.startsWith('→') ? C.amber : undefined, fontSize: 12 }}>{v}</td>
+              {entries.map((e, i) => (
+                <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#fafaf8' }}>
+                  <td style={{ ...tdS, fontFamily: "'DM Mono',monospace", fontWeight: 700, color: C.accent }}>{e.code}</td>
+                  <td style={tdS}>{e.cn}</td>
+                  <td style={{ ...tdS, color: C.textDim, fontSize: 11 }}>{e.en}</td>
+                  {entries.some(ev => ev.note) && <td style={{ ...tdS, fontSize: 11, color: C.textLight }}>{e.note ?? ''}</td>}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {entries.length === 0 && <div style={{ color: C.textLight, fontSize: 12, textAlign: 'center', padding: 12 }}>无匹配</div>}
+      </div>
+    )
+}
+
+function PageValveCodeRef() {
+  const [openUnit, setOpenUnit] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const tierOrder: BomTier[] = ['core', 'structure', 'material', 'addon']
+  const matchesSearch = useCallback((t: typeof VALVE_CODE_TABLES[0]) => {
+    if (!search.trim()) return true
+    const q = search.toLowerCase()
+    return t.name_cn.includes(q) || t.unit.toLowerCase().includes(q) || t.dim.toLowerCase().includes(q) ||
+      t.entries.some(e => e.code.toLowerCase().includes(q) || e.cn.includes(q) || e.en.toLowerCase().includes(q))
+  }, [search])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <input value={search} onChange={e => { setSearch(e.target.value); setOpenUnit(null) }}
+          placeholder="搜索参数名/代号/材质..."
+          style={{ padding: '7px 12px', border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, width: 260 }} />
+        <span style={{ fontSize: 12, color: C.textDim }}>共 19 个参数维度 · 按BOM影响分4层</span>
+      </div>
+      {tierOrder.map(tier => {
+        const tierCfg = TIER_CONFIG[tier]
+        const tables = VALVE_CODE_TABLES.filter(t => t.tier === tier && matchesSearch(t))
+        if (tables.length === 0) return null
+        return (
+          <div key={tier}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: tierCfg.color, display: 'inline-block', flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 600 }}>{tierCfg.label}</span>
+              <span style={{ fontSize: 12, color: C.textDim, marginLeft: 4 }}>{tierCfg.desc}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {tables.map(t => {
+                const isOpen = openUnit === t.unit
+                return (
+                  <div key={t.unit} style={{ borderRadius: 8, border: `1px solid ${isOpen ? tierCfg.color + '60' : C.border}`, overflow: 'hidden' }}>
+                    <div onClick={() => setOpenUnit(isOpen ? null : t.unit)}
+                      style={{ display: 'grid', gridTemplateColumns: '44px 1fr 52px', alignItems: 'center', gap: 8, padding: '9px 14px',
+                        cursor: 'pointer', background: isOpen ? tierCfg.color + '08' : '#fff', transition: 'background .15s' }}>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.textDim }}>{t.dim}</span>
+                      <div>
+                        <span style={{ fontSize: 14, fontWeight: 500 }}>{t.name_cn}</span>
+                        <span style={{ display: 'block', fontSize: 12, color: C.textDim, marginTop: 2 }}>{t.sub_cn}</span>
+                      </div>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.textDim, textAlign: 'right' }}>
+                        {t.entries.length}值 {isOpen ? '▲' : '▼'}
+                      </span>
+                    </div>
+                    {isOpen && <ValveTableDetail table={t} search={search} />}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
+
+// 牌1 零件位（与 Pai1Family 字段对应）
+const PAI1_POS: [string, string][] = [
+  ['body', '阀体'], ['bonnet', '阀盖'], ['seat_base', '阀座(基体)'], ['disc_base', '阀瓣/闸板(基体)'],
+  ['stem', '阀杆'], ['gasket', '垫片'], ['stud', '螺柱'], ['nut', '螺母'], ['packing', '填料'],
+  ['packing_sleeve', '填料压套'], ['packing_plate', '填料压板'], ['yoke', '支架'], ['stem_nut', '阀杆螺母'], ['handwheel', '手轮'],
+]
+// 牌2 列（与 Pai2Trim 字段对应）
+const PAI2_COL: [string, string][] = [
+  ['gate_seal', '闸板密封'], ['seat_seal', '阀座密封'], ['stem', '阀杆'], ['backseat', '上密封座'],
+  ['packing_sleeve', '填料压套'], ['spacer', '隔圈'], ['packing_gasket', '填料垫'],
+]
+
+interface LiveRuleset {
+  factory_id: string
+  pai1: Record<string, Record<string, unknown>>
+  pai2: Record<string, Record<string, unknown>>
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 学习看板（事件流飞轮的可见证据）
+// ════════════════════════════════════════════════════
+
+interface CorrectionRow {
+  valve_spec: string
+  generated: number
+  corrected: number
+  delta_count: number
+  top_field: string
+  correction_rate: number | null
+  last: string
+}
+
+function PageLearning() {
+  const [rows, setRows] = useState<CorrectionRow[]>([])
+  const [recent, setRecent] = useState<Record<string, unknown>[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null)
+    try {
+      const [aggRes, recRes] = await Promise.all([
+        fetch('/api/events?agg=valve_corrections'),
+        fetch('/api/events?limit=30'),
+      ])
+      const agg = await aggRes.json()
+      if (!aggRes.ok) throw new Error(agg.error || '加载失败')
+      setRows(Array.isArray(agg) ? agg : [])
+      const rec = await recRes.json()
+      setRecent(Array.isArray(rec) ? rec : [])
+    } catch (e) { setErr((e as Error).message) }
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const totalGen = rows.reduce((s, r) => s + r.generated, 0)
+  const totalCorr = rows.reduce((s, r) => s + r.corrected, 0)
+  const totalDelta = rows.reduce((s, r) => s + r.delta_count, 0)
+  const cell = { padding: '7px 10px', fontSize: 12, borderBottom: `1px solid ${C.borderLight}`, whiteSpace: 'nowrap' as const }
+  const head = { ...cell, textAlign: 'left' as const, borderBottom: `2px solid ${C.border}`, fontSize: 11, fontWeight: 600, color: C.textDim, background: '#f5f5f0' }
+
+  const EVENT_LABEL: Record<string, string> = {
+    bom_generated: 'BOM已生成', bom_confirmed: 'BOM已确认', quote_confirmed: '报价单已确认', parameters_extracted: '参数已提取',
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <Card
+        title="学习飞轮 · 阀型纠错累积"
+        extra={<Btn variant="ghost" small onClick={load}>刷新</Btn>}
+      >
+        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 12 }}>
+          每次「系统提议 BOM → 人工修正」都会留下一条不可变事件。下表按阀型累积「系统最常猜错什么」——这就是工厂知识在长大的证据。修正越多的阀型，越该把规律固化进规则库/估重表。
+        </div>
+        <div style={{ display: 'flex', gap: 20, marginBottom: 4 }}>
+          {[['BOM 提议总数', totalGen], ['人工修正次数', totalCorr], ['行级修正点', totalDelta]].map(([k, v]) => (
+            <div key={k as string}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.accent, fontFamily: "'DM Mono',monospace" }}>{v as number}</div>
+              <div style={{ fontSize: 11, color: C.textDim }}>{k as string}</div>
+            </div>
+          ))}
+        </div>
+        {err && <div style={{ fontSize: 12, color: '#c0392b', marginTop: 8 }}>{err}</div>}
+      </Card>
+
+      <Card title="按阀型：系统最常猜错什么">
+        {loading ? <div style={{ fontSize: 12, color: C.textLight }}>加载中…</div> :
+          rows.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.textLight, padding: '14px 0' }}>
+              还没有修正记录。去「新建报价」生成 BOM、点「修改」改几处再保存，这里就会累积出阀型纠错画像。
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <thead>
+                  <tr>
+                    {['阀型（类型·主体·件号）', '提议', '修正', '修正点', '修正率', '最常改', '最近'].map(h => <th key={h} style={head}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(r => (
+                    <tr key={r.valve_spec}>
+                      <td style={{ ...cell, fontWeight: 600, fontFamily: "'DM Mono',monospace" }}>{r.valve_spec}</td>
+                      <td style={cell}>{r.generated}</td>
+                      <td style={{ ...cell, color: r.corrected > 0 ? C.accent : C.textLight, fontWeight: 700 }}>{r.corrected}</td>
+                      <td style={cell}>{r.delta_count}</td>
+                      <td style={cell}>{r.correction_rate === null ? '—' : `${r.correction_rate}%`}</td>
+                      <td style={{ ...cell, color: C.blue }}>{r.top_field}</td>
+                      <td style={{ ...cell, color: C.textLight }}>{r.last?.slice(0, 10)}</td>
+                    </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </Card>
+
+      <Card title="最近事件流" extra={<span style={{ fontSize: 12, color: C.textDim }}>不可变 · 只追加</span>}>
+        {recent.length === 0 ? <div style={{ fontSize: 12, color: C.textLight }}>暂无事件</div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {recent.map((e, i) => {
+              const ev = e as { event_type: string; actor: string; valve_spec?: string; occurred_at: string; payload?: { deltas?: unknown[] } }
+              const isCorr = ev.event_type === 'bom_confirmed'
+              const dn = (ev.payload?.deltas?.length) || 0
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, padding: '5px 8px', borderRadius: 5, background: isCorr ? '#fff4ec' : '#fafaf7' }}>
+                  <Tag color={isCorr ? C.accent : ev.event_type === 'quote_confirmed' ? C.green : C.blue}>{EVENT_LABEL[ev.event_type] || ev.event_type}</Tag>
+                  <span style={{ color: C.textDim }}>{ev.actor}</span>
+                  {ev.valve_spec && <span style={{ fontFamily: "'DM Mono',monospace", color: C.text }}>{ev.valve_spec}</span>}
+                  {isCorr && dn > 0 && <span style={{ color: C.accent }}>改 {dn} 处</span>}
+                  <span style={{ marginLeft: 'auto', color: C.textLight, fontSize: 11 }}>{ev.occurred_at?.slice(0, 16).replace('T', ' ')}</span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+function PageRules() {
+  // 租户由会话决定（服务端 getTenantId），前端不再传 factory_id；工厂名从响应回显
+  const [rs, setRs] = useState<LiveRuleset | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const fileRef = React.useRef<HTMLInputElement>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null)
+    try {
+      const res = await fetch('/api/rulesets')
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || '加载失败')
+      setRs(d)
+    } catch (e) { setErr((e as Error).message) }
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const onUpload = async (file: File) => {
+    setImporting(true); setMsg(null); setErr(null)
+    try {
+      const json = JSON.parse(await file.text())
+      const res = await fetch('/api/rulesets/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...json, note: `上传 ${file.name}` }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || '导入失败')
+      setMsg(`✅ 已入库：牌1 ${d.pai1_families} 族${d.pai1_version ? `(v${d.pai1_version})` : ''}，牌2 ${d.pai2_trims} 件号${d.pai2_version ? `(v${d.pai2_version})` : ''}`)
+      await load()
+    } catch (e) { setErr('导入失败：' + (e as Error).message) }
+    setImporting(false)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  const families = rs ? Object.keys(rs.pai1) : []
+  const trims = rs ? Object.keys(rs.pai2) : []
+  const cell = { padding: '5px 8px', fontSize: 12, whiteSpace: 'nowrap' as const, borderBottom: `1px solid ${C.borderLight}` }
+  const head = { ...cell, textAlign: 'left' as const, borderBottom: `2px solid ${C.border}`, fontSize: 11, fontWeight: 600, background: '#f5f5f0', position: 'sticky' as const, left: 0 }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <Card
+        title="工厂规则库（来自数据库 · 实时）"
+        extra={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: C.textDim }}>工厂：{rs?.factory_id ?? '—'}</span>
+            <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f) }} />
+            <Btn variant="secondary" small disabled={importing} onClick={() => fileRef.current?.click()}>
+              {importing ? '导入中…' : '上传规则 JSON'}
+            </Btn>
+            <Btn variant="ghost" small onClick={load}>刷新</Btn>
+          </div>
+        }
+      >
+        <div style={{ fontSize: 12, color: C.textDim }}>
+          规则以版本化形式存于 <code>factory_rulesets</code>，BOM 由确定性引擎据此合成。上传 JSON（支持 <code>{'{pai1,pai2}'}</code> 或规范 <code>{'{pai1_body_material,pai2_internals}'}</code>）将写入新版本并即时生效。
+        </div>
+        {err && <div style={{ marginTop: 8, fontSize: 12, color: '#c0392b' }}>{err}</div>}
+        {msg && <div style={{ marginTop: 8, fontSize: 12, color: C.green }}>{msg}</div>}
+        {loading && <div style={{ marginTop: 8, fontSize: 12, color: C.textLight }}>加载中…</div>}
+      </Card>
+
+      <Card title="牌1：主体材质 → 零部件材质" extra={<span style={{ fontSize: 12, color: C.textDim }}>{families.length} 个材质族</span>}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={head}>零件位</th>
+                {families.map(f => <th key={f} style={{ ...head, position: 'static' }}>{f}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {PAI1_POS.map(([key, label]) => (
+                <tr key={key}>
+                  <td style={{ ...cell, fontWeight: 600, background: '#fafaf7', position: 'sticky', left: 0 }}>{label}</td>
+                  {families.map(f => <td key={f} style={cell}>{String(rs?.pai1[f]?.[key] ?? '—')}</td>)}
                 </tr>
               ))}
             </tbody>
@@ -2525,22 +3024,33 @@ function PageRules() {
         </div>
       </Card>
 
-      <Card title="规则表2：API600件号对应表" extra={<span style={{ fontSize: 12, color: C.textDim }}>牌2 · 件号→可换件</span>}>
-        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>给定件号，查对应行得到4个可换件材质</div>
-        <DataTable
-          columns={[
-            { title: '件号', key: '号', render: v => <span style={{ fontWeight: 700, fontFamily: "'DM Mono',monospace", color: ['1#', '5#', '8#'].includes(v as string) ? C.accent : C.text }}>{v as string}</span> },
-            { title: '阀瓣可换面', key: '阀瓣' },
-            { title: '阀座可换面', key: '阀座' },
-            { title: '阀杆', key: '阀杆' },
-            { title: '填料压套', key: '压套' },
-            { title: '常见名称', key: '名称', render: v => <Tag color={C.blue}>{v as string}</Tag> },
-          ]}
-          data={TRIM_TABLE as unknown as Record<string, unknown>[]}
-          rowKey="号"
-        />
-        <div style={{ marginTop: 8, fontSize: 12, color: C.textDim, padding: '8px 0', borderTop: `1px solid ${C.borderLight}` }}>
-          红色标记 = 2026年订单中最常用的3种配置，覆盖80%+订单量。HF = STL = 哈斯特合金堆焊。
+      <Card title="牌2：API600 件号 → 可换件材质" extra={<span style={{ fontSize: 12, color: C.textDim }}>{trims.length} 个件号</span>}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={head}>件号</th>
+                <th style={{ ...head, position: 'static' }}>别名</th>
+                {PAI2_COL.map(([k, label]) => <th key={k} style={{ ...head, position: 'static' }}>{label}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {trims.map(t => {
+                const row = rs?.pai2[t] ?? {}
+                const hot = ['1', '5', '8'].includes(t)
+                return (
+                  <tr key={t}>
+                    <td style={{ ...cell, fontWeight: 700, fontFamily: "'DM Mono',monospace", color: hot ? C.accent : C.text, background: '#fafaf7', position: 'sticky', left: 0 }}>{t}#</td>
+                    <td style={cell}><Tag color={C.blue}>{String(row.alias ?? '')}</Tag></td>
+                    {PAI2_COL.map(([k]) => <td key={k} style={cell}>{String(row[k] ?? '—')}</td>)}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: C.textDim, paddingTop: 8, borderTop: `1px solid ${C.borderLight}` }}>
+          橙色件号 = 工厂最常用 3 种（1#/5#/8#），覆盖 80%+ 订单。HF(STL) = 哈氏合金堆焊。
         </div>
       </Card>
     </div>
@@ -2648,7 +3158,7 @@ function PageParamLib({ paramLib, setParamLib }: {
   const [activeKey, setActiveKey] = useState<keyof ParamLibrary>('类型')
   const [newVal, setNewVal] = useState('')
 
-  const current = paramLib[activeKey] ?? []
+  const current = [...new Set(paramLib[activeKey] ?? [])]
 
   const addVal = () => {
     const v = newVal.trim()
@@ -2691,8 +3201,8 @@ function PageParamLib({ paramLib, setParamLib }: {
           {current.length === 0 && (
             <span style={{ fontSize: 12, color: C.textLight }}>暂无数据</span>
           )}
-          {current.map(v => (
-            <div key={v} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px', background: C.blue + '12', borderRadius: 5, border: `1px solid ${C.blue}28` }}>
+          {current.map((v, vi) => (
+            <div key={`${v}-${vi}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px', background: C.blue + '12', borderRadius: 5, border: `1px solid ${C.blue}28` }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: C.blue, fontFamily: "'DM Mono',monospace" }}>{v}</span>
               <button
                 onClick={() => removeVal(v)}
@@ -2723,41 +3233,353 @@ function PageParamLib({ paramLib, setParamLib }: {
 // PAGE: 历史参数组
 // ════════════════════════════════════════════════════
 
-function PageParams({ params }: { params: Param[] }) {
-  const [filter, setFilter] = useState({ 类型: '全部', search: '' })
-  const types = ['全部', ...Array.from(new Set(params.map(p => p.类型)))]
-  const filtered = params.filter(p => {
-    if (filter.类型 !== '全部' && p.类型 !== filter.类型) return false
-    if (filter.search && !JSON.stringify(p).includes(filter.search)) return false
-    return true
-  })
+// ── 辅助：从 ValveProduct 的 U-codes 推导可读标签 ──────────
+const U8_MAP: Record<string, string> = { C:'WCB', C2:'LF2/LCB', P:'304/CF8', L:'316L/CF3M', L1:'304L/CF3', R:'316/CF8M', V3:'F11/WC6', V4:'F22/WC9' }
+const U8_COLOR_MAP: Record<string, string> = { C:'#64748b', C2:C.blue, P:C.green, L:'#0ea5e9', L1:'#22c55e', R:'#6366f1', V3:C.amber, V4:'#f59e0b' }
+const U6_MAP: Record<string, string> = { H:'铁基SS', W:'本体', Y1:'单堆STL', Y2:'双堆STL', F:'PTFE', M:'Monel', T:'铜合金', X:'橡胶' }
+const U6_COLOR_MAP: Record<string, string> = { Y2:C.amber, Y1:'#f97316', H:'#8b5cf6', W:C.blue, F:C.green, M:'#ec4899' }
+const U10_MAP: Record<string, string> = { S:'SW', B:'BW', R:'RF', J:'RTJ', A:'FF' }
+const U1_MAP: Record<string, string> = { D:'低温', K:'抗硫NACE', W:'波纹管', B:'保温', H:'缓闭', Q:'快速', NK:'真空' }
+const U19_MAP: Record<string, string> = { '00':'', '31':'无铜', '06':'延长阀盖', '07':'延长阀盖(-196℃)', '0631':'延长阀盖+无铜', '03':'氢气', '11':'脱脂' }
+const U13_MAP: Record<string, string> = { '00':'', '01':'F6a/13Cr', '02':'F304', '03':'F304L', '04':'F316', '05':'F316L', '12':'F11', '13':'F22' }
+const U14_MAP: Record<string, string> = { '00':'', '03':'304/CF8', '04':'316/CF8M', '05':'304L/CF3', '06':'316L/CF3M', '12':'F11/WC6' }
+
+function deriveProductJianHao(p: ValveProduct): string {
+  if (p.U6 === 'Y2') {
+    if (['L','R'].includes(p.U8)) return '16#'
+    if (['P','L1'].includes(p.U8)) return '15#'
+    return '5#'
+  }
+  if (p.U6 === 'W') {
+    if (['P','L1'].includes(p.U8)) return (p.U14 === '04'||p.U14==='06') ? '10#' : '2#'
+    if (['L','R'].includes(p.U8)) return '10#'
+    if (p.U8 === 'C2') return '2#'
+    return '1#'
+  }
+  if (p.U6 === 'H') return '1#'
+  return '1#'
+}
+
+// ══════════════════════════════════════════════════════
+// PAGE: 阀门产品库（列表）
+// ══════════════════════════════════════════════════════
+const CREATE_TABLE_SQL = `-- 1. 建表（含来源 + 下单次数字段）
+CREATE TABLE IF NOT EXISTS valve_products (
+  id TEXT PRIMARY KEY,
+  "U1" TEXT NOT NULL DEFAULT '', "U2" TEXT NOT NULL DEFAULT 'Z',
+  "U3" TEXT NOT NULL DEFAULT '', "U4" TEXT NOT NULL DEFAULT '',
+  "U5" TEXT NOT NULL DEFAULT '', "U6" TEXT NOT NULL DEFAULT '',
+  "U7" TEXT NOT NULL DEFAULT '150Lb', "U8" TEXT NOT NULL DEFAULT 'C',
+  "U9" INTEGER NOT NULL DEFAULT 0, "U10" TEXT NOT NULL DEFAULT '',
+  "U11" TEXT NOT NULL DEFAULT '0', "U12" TEXT NOT NULL DEFAULT 'A',
+  "U13" TEXT NOT NULL DEFAULT '00', "U14" TEXT NOT NULL DEFAULT '00',
+  "U15" TEXT NOT NULL DEFAULT 'A', "U16" TEXT NOT NULL DEFAULT '00',
+  "U17" TEXT NOT NULL DEFAULT 'A', "U18" TEXT NOT NULL DEFAULT '00',
+  "U19" TEXT NOT NULL DEFAULT '00',
+  full_code TEXT, name TEXT, note TEXT,
+  来源 TEXT DEFAULT '',
+  下单次数 INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. 关闭 RLS，允许 anon key 读写
+ALTER TABLE valve_products DISABLE ROW LEVEL SECURITY;
+
+-- 如果表已存在，只需追加字段 + 关闭 RLS：
+-- ALTER TABLE valve_products ADD COLUMN IF NOT EXISTS 来源 TEXT DEFAULT '';
+-- ALTER TABLE valve_products ADD COLUMN IF NOT EXISTS 下单次数 INTEGER DEFAULT 0;
+-- ALTER TABLE valve_products DISABLE ROW LEVEL SECURITY;`
+
+// 产品表格列定义（不含来源列，来源作为分组标题）
+function ProductTableColumns(setPage: (p: PageState) => void, showCount: boolean) {
+  return [
+    { title: '#', key: '_idx', render: (v: unknown) => <span style={{ color: C.textLight, fontFamily: "'DM Mono',monospace", fontSize: 11 }}>{v as number}</span> },
+    { title: '序号/组别', key: 'id', render: (v: unknown, row: Record<string, unknown>) => {
+      const p = row as unknown as ValveProduct
+      const u1 = U1_MAP[p.U1]
+      return (
+        <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11 }}>
+          {u1 && <Tag color={C.amber} style={{ marginRight: 4, fontSize: 10 }}>{u1}</Tag>}
+          {v as string}
+        </span>
+      )
+    }},
+    { title: 'D2 类型', key: 'U2', render: (v: unknown) => {
+      const t = v as string
+      const LABELS: Record<string,string> = { Z:'闸阀', J:'截止阀', H:'止回阀', Q:'球阀', D:'蝶阀' }
+      return <Tag color={C.blue}>{LABELS[t] || t}</Tag>
+    }},
+    { title: 'D6 密封面', key: 'U6', render: (v: unknown) => {
+      const s = (v as string) || ''
+      return s ? <Tag color={U6_COLOR_MAP[s] || C.textDim}>{U6_MAP[s] || s}</Tag> : <span style={{ color: C.textLight }}>—</span>
+    }},
+    { title: 'D7 压力', key: 'U7', render: (v: unknown) => <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>{v as string}</span> },
+    { title: 'D8 阀体', key: 'U8', render: (v: unknown) => {
+      const s = v as string
+      const color = U8_COLOR_MAP[s] || C.textDim
+      return <span><span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color }}>{s}</span>{U8_MAP[s] && <span style={{ fontSize: 10, color: C.textDim, marginLeft: 4 }}>{U8_MAP[s]}</span>}</span>
+    }},
+    { title: 'D9 口径', key: 'U9', render: (v: unknown) => {
+      const n = v as number
+      return n > 0 ? <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>DN{n}</span> : <span style={{ color: C.textLight }}>—</span>
+    }},
+    { title: '阀门编码', key: 'full_code', render: (v: unknown, row: Record<string, unknown>) => {
+      const p = row as unknown as ValveProduct
+      const jianhao = deriveProductJianHao(p)
+      return (
+        <span>
+          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.blue }}>{(v as string) || '—'}</span>
+          <Tag color={C.accent} style={{ marginLeft: 6, fontSize: 10 }}>{jianhao}</Tag>
+        </span>
+      )
+    }},
+    ...(showCount ? [{
+      title: '次数', key: '下单次数' as string,
+      render: (v: unknown) => (v as number) > 0
+        ? <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: C.accent }}>{v as number}</span>
+        : <span style={{ color: C.textLight }}>—</span>
+    }] : []),
+  ]
+}
+
+function PageParams({ setPage }: { params: Param[]; setPage: (p: PageState) => void }) {
+  const [products, setProducts] = useState<ValveProduct[]>([])
+  const [loading, setLoading] = useState(true)
+  const [dbError, setDbError] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
+  const [seeding, setSeeding] = useState(false)
+  const [seedMsg, setSeedMsg] = useState('')
+  const [showSql, setShowSql] = useState(false)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  const loadProducts = () => {
+    setLoading(true); setDbError(null)
+    fetch('/api/products').then(r => r.json()).then(d => {
+      if (d.error) { setDbError(d.error); setProducts([]) }
+      else setProducts(Array.isArray(d) ? d : [])
+      setLoading(false)
+    }).catch(e => { setDbError(String(e)); setLoading(false) })
+  }
+
+  useEffect(() => { loadProducts() }, [])
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return products
+    const q = search.toLowerCase()
+    return products.filter(p => JSON.stringify(p).toLowerCase().includes(q))
+  }, [products, search])
+
+  // 按来源分组，保持顺序：先出现的来源排前面
+  const groups = useMemo(() => {
+    const order: string[] = []
+    const map = new Map<string, ValveProduct[]>()
+    for (const p of filtered) {
+      const src = p.来源 || '未分类'
+      if (!map.has(src)) { map.set(src, []); order.push(src) }
+      map.get(src)!.push(p)
+    }
+    return order.map(src => ({ src, items: map.get(src)! }))
+  }, [filtered])
+
+  const handleSeed = async () => {
+    if (!confirm('将向数据库写入全部产品数据（已存在的会被覆盖），确认？')) return
+    setSeeding(true); setSeedMsg('')
+    const res = await fetch('/api/products/seed', { method: 'POST' })
+    const json = await res.json()
+    if (json.ok) { setSeedMsg(`✅ 已写入 ${json.inserted} 条`); loadProducts() }
+    else setSeedMsg(`❌ ${json.error}`)
+    setSeeding(false)
+  }
+
+  const toggleCollapse = (src: string) =>
+    setCollapsed(prev => { const n = new Set(prev); n.has(src) ? n.delete(src) : n.add(src); return n })
+
+  const tableNotExists = dbError?.includes('schema cache') || dbError?.includes('does not exist')
+
+  const GROUP_COLOR: Record<string, string> = {
+    '高压闸阀询价': '#d97706',
+    '2026订单表': C.blue,
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <select value={filter.类型} onChange={e => setFilter(f => ({ ...f, 类型: e.target.value }))} style={{ padding: '6px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 13, fontFamily: 'inherit' }}>
-          {types.map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
-        <input value={filter.search} onChange={e => setFilter(f => ({ ...f, search: e.target.value }))} placeholder="搜索..." style={{ padding: '6px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 13, width: 180 }} />
-        <span style={{ fontSize: 12, color: C.textDim }}>共 {filtered.length} 条</span>
+
+      {/* 建表引导 */}
+      {tableNotExists && (
+        <Card>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#dc2626' }}>⚠ 数据库表不存在</span>
+              <span style={{ fontSize: 12, color: C.textDim }}>需要先在 Supabase SQL Editor 中建表</span>
+              <Btn small variant="ghost" onClick={() => setShowSql(v => !v)}>{showSql ? '收起 SQL ▲' : '查看建表 SQL ▼'}</Btn>
+              <Btn small onClick={() => window.open('https://supabase.com/dashboard/project/wqeknhdfbbcftmzmkogy/sql', '_blank')}>打开 SQL Editor →</Btn>
+            </div>
+            {showSql && (
+              <div style={{ position: 'relative' }}>
+                <pre style={{ background: '#1e293b', color: '#e2e8f0', padding: '14px 16px', borderRadius: 8,
+                  fontSize: 12, lineHeight: 1.6, overflow: 'auto', margin: 0, fontFamily: "'DM Mono',monospace" }}>
+                  {CREATE_TABLE_SQL}
+                </pre>
+                <button onClick={() => navigator.clipboard.writeText(CREATE_TABLE_SQL)}
+                  style={{ position: 'absolute', top: 8, right: 8, padding: '3px 10px', fontSize: 11,
+                    background: '#334155', color: '#94a3b8', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+                  复制
+                </button>
+              </div>
+            )}
+            <Btn small variant="ghost" onClick={loadProducts}>↻ 重试连接</Btn>
+          </div>
+        </Card>
+      )}
+
+      {/* Toolbar */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="搜索编码/材质/DN..."
+          style={{ padding: '7px 12px', border: `1px solid ${C.border}`, borderRadius: 5, fontSize: 13, width: 240 }} />
+        <span style={{ fontSize: 12, color: C.textDim, flex: 1 }}>
+          共 <strong>{filtered.length}</strong> 条
+          {groups.map(g => (
+            <span key={g.src} style={{ marginLeft: 8 }}>
+              <span style={{ color: GROUP_COLOR[g.src] || C.textDim, fontWeight: 600 }}>{g.items.length}</span>
+              <span style={{ color: C.textDim }}>·{g.src}</span>
+            </span>
+          ))}
+          {loading && ' · 加载中…'}
+        </span>
+        {!tableNotExists && !loading && (
+          <Btn small onClick={handleSeed} disabled={seeding}>
+            {seeding ? '写入中…' : products.length === 0 ? '⊕ 初始化产品数据' : '↻ 重新写入'}
+          </Btn>
+        )}
+        {seedMsg && <span style={{ fontSize: 12, color: seedMsg.startsWith('✅') ? C.green : '#dc2626' }}>{seedMsg}</span>}
       </div>
-      <Card>
-        <DataTable
-          columns={[
-            { title: '类型',     key: '类型',     render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
-            { title: 'DN',       key: 'DN',       render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>DN{v as number}</span> },
-            { title: '压力',     key: '压力',     render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}LB</span> },
-            { title: '主体',     key: '主体' },
-            { title: '阀瓣/阀闸', key: '阀瓣阀闸' },
-            { title: '阀座',     key: '阀座' },
-            { title: '阀杆/轴', key: '阀杆轴' },
-            { title: '螺柱',     key: '螺柱' },
-            { title: '填料',     key: '中腔填料' },
-            { title: '次数', key: '次数', render: v => <span style={{ fontFamily: "'DM Mono',monospace", color: C.textDim }}>{v as number}</span> },
-            { title: '数量', key: '数量', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{v as number}</span> },
-          ]}
-          data={filtered as unknown as Record<string, unknown>[]}
-        />
-      </Card>
+
+      {/* 分组展示 */}
+      {loading ? (
+        <Card><div style={{ textAlign: 'center', padding: 40, color: C.textLight }}>加载中…</div></Card>
+      ) : filtered.length === 0 ? (
+        <Card><div style={{ textAlign: 'center', padding: 32, color: C.textLight }}>
+          {products.length === 0 ? (tableNotExists ? '请先建表' : '暂无数据') : '无匹配结果'}
+        </div></Card>
+      ) : groups.map(({ src, items }) => {
+        const isCollapsed = collapsed.has(src)
+        const groupColor = GROUP_COLOR[src] || C.textDim
+        const hasCount = items.some(p => (p.下单次数 ?? 0) > 0)
+        return (
+          <Card key={src} title={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+              onClick={() => toggleCollapse(src)}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: groupColor, display: 'inline-block' }} />
+              <span style={{ fontWeight: 700 }}>{src}</span>
+              <span style={{ fontSize: 12, color: C.textDim, fontWeight: 400 }}>{items.length} 条</span>
+              <span style={{ fontSize: 12, color: C.textDim, marginLeft: 'auto' }}>{isCollapsed ? '▼ 展开' : '▲ 收起'}</span>
+            </div>
+          }>
+            {!isCollapsed && (
+              <DataTable
+                columns={ProductTableColumns(setPage, hasCount)}
+                data={items.map((p, i) => ({ ...p, _idx: i + 1 } as unknown as Record<string, unknown>))}
+                onRowClick={row => setPage({ name: 'productDetail', data: row as unknown as ValveProduct })}
+              />
+            )}
+          </Card>
+        )
+      })}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════
+// PAGE: 阀门产品详情（19参数 · 4层）
+// ══════════════════════════════════════════════════════
+function PageProductDetail({ product, goBack }: { product: ValveProduct; goBack: () => void }) {
+  const tierOrder: BomTier[] = ['core', 'structure', 'material', 'addon']
+
+  // map unit → product value
+  const getVal = (unit: string): string => {
+    const v = (product as Record<string, unknown>)[unit]
+    return v === undefined || v === null ? '' : String(v)
+  }
+
+  // decode code → label
+  const decodeLabel = (unit: string, code: string): string => {
+    const table = VALVE_CODE_TABLES.find(t => t.unit === unit)
+    if (!table) return code
+    // For grouped tables find in entries ignoring group
+    const entry = table.entries.find(e => e.code === code)
+    return entry ? entry.cn : code
+  }
+
+  const jianhao = deriveProductJianHao(product)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, paddingBottom: 4 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <Btn variant="ghost" small onClick={goBack}>← 返回产品库</Btn>
+        <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: C.blue, fontSize: 14 }}>
+          {product.full_code}
+        </span>
+        <Tag color={C.accent}>{jianhao}</Tag>
+        {product.U1 && <Tag color={C.amber}>{U1_MAP[product.U1] || product.U1}</Tag>}
+        <span style={{ fontSize: 12, color: C.textDim, marginLeft: 'auto' }}>ID: {product.id}</span>
+      </div>
+
+      {/* 阀门名称 */}
+      {product.name && (
+        <Card>
+          <div style={{ fontSize: 13, color: C.text, fontFamily: "'DM Mono',monospace", padding: '2px 0' }}>
+            {product.name}
+          </div>
+        </Card>
+      )}
+
+      {/* 4层参数展示 */}
+      {tierOrder.map(tier => {
+        const tierCfg = TIER_CONFIG[tier]
+        const tables = VALVE_CODE_TABLES.filter(t => t.tier === tier)
+        return (
+          <div key={tier}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: tierCfg.color, display: 'inline-block' }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: tierCfg.color }}>{tierCfg.label}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8 }}>
+              {tables.map(t => {
+                const rawVal = getVal(t.unit)
+                const isEmpty = rawVal === '' || rawVal === '0' || rawVal === 'A' || rawVal === '00'
+                const label = decodeLabel(t.unit, rawVal)
+                return (
+                  <div key={t.unit} style={{
+                    padding: '10px 14px', borderRadius: 8, background: isEmpty ? '#fafaf9' : '#fff',
+                    border: `1px solid ${isEmpty ? C.borderLight : tierCfg.color + '40'}`,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, fontFamily: "'DM Mono',monospace", color: C.textDim }}>{t.dim} · {t.unit}</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, fontWeight: 700,
+                        color: isEmpty ? C.textLight : tierCfg.color }}>
+                        {rawVal || '—'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: isEmpty ? C.textDim : C.text }}>{t.name_cn}</div>
+                    <div style={{ fontSize: 11, color: isEmpty ? C.textLight : C.textDim, marginTop: 2 }}>
+                      {isEmpty ? '默认/标准' : label}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+
+      {/* 备注 */}
+      {product.note && (
+        <Card title="备注">
+          <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.7 }}>{product.note}</div>
+        </Card>
+      )}
     </div>
   )
 }
@@ -3417,14 +4239,89 @@ const NAV = [
   { id: 'quoteItems',  icon: '≡', label: '报价明细', group: '核心流程' },
   { id: 'drawings',    icon: '📐', label: '小样图库',   group: '数据管理' },
   { id: 'paramLib',    icon: '◈', label: '参数库',     group: '数据管理' },
-  { id: 'params',      icon: '⬡', label: '参数组合库', group: '数据管理' },
+  { id: 'valveCodeRef', icon: '⊟', label: '阀门参数库', group: '数据管理' },
+  { id: 'params',      icon: '⬡', label: '阀门产品库', group: '数据管理' },
   { id: 'rules',       icon: '☶', label: '规则库',     group: '数据管理' },
+  { id: 'learning',    icon: '✦', label: '学习看板',   group: '数据管理' },
   { id: 'valveParts',  icon: '⊞', label: '零件库',     group: '数据管理' },
   { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },
   { id: 'dataInit',    icon: '⊕', label: '初始化',     group: '数据管理' },
 ]
 
+// ════════════════════════════════════════════════════
+// 多租户：登录 / 会话
+// ════════════════════════════════════════════════════
+
+interface AuthInfo {
+  tenant_id: string
+  name: string
+  username: string
+  role: string
+  must_change_pw?: boolean
+  empty_password?: boolean
+}
+
+function LoginPage({ onLogin }: { onLogin: (a: AuthInfo) => void }) {
+  const [tenants, setTenants] = useState<{ id: string; name: string }[]>([])
+  const [tenantId, setTenantId] = useState('')
+  const [password, setPassword] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/tenants').then(r => r.json()).then(d => {
+      if (Array.isArray(d)) { setTenants(d); if (d[0]) setTenantId(d[0].id) }
+    }).catch(() => setErr('无法加载租户列表'))
+  }, [])
+
+  const submit = async () => {
+    if (!tenantId) { setErr('请选择租户'); return }
+    setLoading(true); setErr(null)
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId, password }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || '登录失败')
+      onLogin(d)
+    } catch (e) { setErr((e as Error).message) }
+    setLoading(false)
+  }
+
+  const cur = tenants.find(t => t.id === tenantId)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: C.bg, fontFamily: "'Noto Sans SC',sans-serif" }}>
+      <div style={{ width: 360, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: '28px 26px', boxShadow: '0 8px 30px rgba(0,0,0,0.08)' }}>
+        <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}><span style={{ color: C.accent }}>⬡</span> 阀门智能报价</div>
+        <div style={{ fontSize: 12, color: C.textDim, marginBottom: 22 }}>请选择工厂并登录</div>
+
+        <label style={{ fontSize: 12, color: C.textDim }}>工厂（租户）</label>
+        <select value={tenantId} onChange={e => setTenantId(e.target.value)}
+          style={{ width: '100%', padding: '9px 10px', margin: '5px 0 16px', border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 14, background: '#fff' }}>
+          {tenants.length === 0 && <option value="">（无可用租户）</option>}
+          {tenants.map(t => <option key={t.id} value={t.id}>{t.name}（{t.id}）</option>)}
+        </select>
+
+        <label style={{ fontSize: 12, color: C.textDim }}>密码 <span style={{ color: C.textLight }}>（初始为空，直接登录）</span></label>
+        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') submit() }} placeholder="留空 = 首次登录"
+          style={{ width: '100%', padding: '9px 10px', margin: '5px 0 18px', border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 14, boxSizing: 'border-box' }} />
+
+        {err && <div style={{ fontSize: 12, color: '#c0392b', marginBottom: 12 }}>{err}</div>}
+
+        <button onClick={submit} disabled={loading || !tenantId}
+          style={{ width: '100%', padding: '10px', border: 'none', borderRadius: 6, background: C.accent, color: '#fff', fontSize: 14, fontWeight: 700, cursor: loading ? 'wait' : 'pointer', opacity: loading || !tenantId ? 0.6 : 1 }}>
+          {loading ? '登录中…' : `登录${cur ? ' · ' + cur.name : ''}`}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export function ValveQuoteApp() {
+  const [auth, setAuth] = useState<AuthInfo | null>(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const [page, setPage] = useState<PageState>({ name: 'dashboard' })
   const [params, setParams] = useState<Param[]>([])
   const [paramLib, setParamLib] = useState<ParamLibrary>(() => initParamLib(SEED_PARAMS))
@@ -3443,12 +4340,23 @@ export function ValveQuoteApp() {
     } catch { /* ignore */ }
   }, [])
 
-  // 从 Supabase 加载数据
+  // 校验会话：进入即查 /api/auth/me
   useEffect(() => {
+    fetch('/api/auth/me')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (d?.authenticated) setAuth(d) })
+      .catch(() => { /* 未登录 */ })
+      .finally(() => setAuthChecked(true))
+  }, [])
+
+  // 从 Supabase 加载数据（按租户隔离；登录后才加载）
+  useEffect(() => {
+    if (!auth) return
+    const tenantId = auth.tenant_id
     const load = async () => {
       const [qRes, pRes, dRes] = await Promise.all([
-        supabase.from('quotes').select('id, data').order('created_at', { ascending: false }),
-        supabase.from('params').select('id, data'),
+        supabase.from('quotes').select('id, data').eq('tenant_id', tenantId).order('created_at', { ascending: false }),
+        supabase.from('params').select('id, data').eq('tenant_id', tenantId),
         fetch('/api/drawings').then(r => r.json()),
       ])
       if (qRes.data) setQuotes(qRes.data.map((r: { id: string; data: Quote }) => r.data))
@@ -3463,7 +4371,7 @@ export function ValveQuoteApp() {
       setLoaded(true)
     }
     load()
-  }, [])
+  }, [auth])
 
   // paramLib 手动添加值持久化到 localStorage
   useEffect(() => {
@@ -3471,19 +4379,30 @@ export function ValveQuoteApp() {
     try { localStorage.setItem('vq2-paramlib', JSON.stringify(paramLib)) } catch { /* ignore */ }
   }, [paramLib, loaded])
 
+  // 鉴权门：未校验完显示加载，未登录显示登录页
+  if (!authChecked) {
+    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: C.textDim, fontFamily: "'Noto Sans SC',sans-serif" }}>加载中…</div>
+  }
+  if (!auth) {
+    return <LoginPage onLogin={setAuth} />
+  }
+
   const renderPage = () => {
     switch (page.name) {
       case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setPage={setPage} />
-      case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} />
+      case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} tenantId={auth.tenant_id} />
       case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
       case 'quoteDetail': return <PageQuoteDetail quote={page.data} goBack={() => setPage({ name: 'quotes' })} drawings={drawings} />
       case 'quoteItems': return <PageQuoteItems quotes={quotes} drawings={drawings} setPage={setPage} />
-      case 'params': return <PageParams params={params} />
+      case 'params': return <PageParams params={params} setPage={setPage} />
+      case 'productDetail': return <PageProductDetail product={page.data} goBack={() => setPage({ name: 'params' })} />
       case 'drawings':   return <PageDrawings drawings={drawings} setDrawings={setDrawings} />
       case 'valveParts': return <PageValveParts />
       case 'bomList': return <PageBomList />
       case 'paramLib': return <PageParamLib paramLib={paramLib} setParamLib={setParamLib} />
+      case 'valveCodeRef': return <PageValveCodeRef />
       case 'rules': return <PageRules />
+      case 'learning': return <PageLearning />
       case 'dataInit': return <PageDataInit params={params} setParams={setParams} paramLib={paramLib} setParamLib={setParamLib} />
     }
   }
@@ -3494,10 +4413,10 @@ export function ValveQuoteApp() {
       {/* 侧边栏 */}
       <div style={{ width: 190, background: C.sidebar, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ padding: '18px 14px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}><span style={{ color: C.accent }}>⬡</span> 越强阀门</div>
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>阀门智能报价 v2.0</div>
+          <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}><span style={{ color: C.accent }}>⬡</span> {auth.name}</div>
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>阀门智能报价 v2.0 · {auth.tenant_id}</div>
         </div>
-        <nav style={{ padding: '6px 0', flex: 1 }}>
+        <nav style={{ padding: '6px 0', flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {NAV.map(n => {
             const active = page.name === n.id || (page.name === 'quoteDetail' && n.id === 'quotes')
             let groupLabel: string | null = null
@@ -3517,32 +4436,78 @@ export function ValveQuoteApp() {
             )
           })}
         </nav>
-        <div
-          style={{ padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer' }}
-          onClick={() => {
-            const name = prompt('请输入您的姓名：', 业务员)
-            if (name !== null) {
-              const trimmed = name.trim()
-              set业务员(trimmed)
-              localStorage.setItem('vq-salesperson', trimmed)
-            }
-          }}
-          title="点击修改姓名"
-        >
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.2)' }}>业务员</div>
-          <div style={{ fontSize: 12, color: 业务员 ? 'rgba(255,255,255,0.6)' : C.amber, marginTop: 2 }}>
-            {业务员 || '⚠ 点击设置姓名'}
+        {/* 底部：业务员 + 账户 */}
+        <div style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.15)', padding: '10px 10px 16px' }}>
+          {/* 业务员（可点击设置） */}
+          <div
+            onClick={() => {
+              const name = prompt('请输入您的姓名：', 业务员)
+              if (name !== null) { const t = name.trim(); set业务员(t); localStorage.setItem('vq-salesperson', t) }
+            }}
+            title="点击修改业务员姓名"
+            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 8px', borderRadius: 7, cursor: 'pointer', transition: 'background 0.15s' }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+          >
+            <div style={{ width: 30, height: 30, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 业务员 ? C.accent : 'rgba(255,255,255,0.12)', color: '#fff', fontSize: 13, fontWeight: 700 }}>
+              {业务员 ? 业务员[0] : '?'}
+            </div>
+            <div style={{ overflow: 'hidden' }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 业务员 ? 'rgba(255,255,255,0.85)' : C.amber, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {业务员 || '点击设置姓名'}
+              </div>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>业务员 · {auth.role}</div>
+            </div>
+          </div>
+
+          {/* 账户信息 */}
+          <div style={{ padding: '6px 8px 9px', fontSize: 10.5, color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span>账户 {auth.username}</span>
+            {auth.empty_password && <span style={{ color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: '0 4px', fontSize: 9 }}>未设密码</span>}
+          </div>
+
+          {/* 操作 */}
+          <div style={{ display: 'flex', gap: 7 }}>
+            <button
+              style={{ flex: 1, padding: '7px 0', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, background: 'transparent', color: 'rgba(255,255,255,0.7)', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#fff' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)' }}
+              onClick={async () => {
+                const np = prompt(auth.empty_password ? '设置新密码（至少4位）：' : '输入新密码（至少4位）：')
+                if (np === null) return
+                const op = auth.empty_password ? '' : (prompt('输入原密码：') ?? '')
+                const res = await fetch('/api/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ old_password: op, new_password: np }) })
+                const d = await res.json()
+                if (res.ok) { alert('密码已更新'); setAuth({ ...auth, empty_password: false, must_change_pw: false }) }
+                else alert('修改失败：' + (d.error || ''))
+              }}>🔑 改密</button>
+            <button
+              style={{ flex: 1, padding: '7px 0', border: `1px solid ${C.accent}55`, borderRadius: 6, background: `${C.accent}22`, color: C.accent, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.background = C.accent; e.currentTarget.style.color = '#fff' }}
+              onMouseLeave={e => { e.currentTarget.style.background = `${C.accent}22`; e.currentTarget.style.color = C.accent }}
+              onClick={async () => {
+                if (!confirm('确认退出登录？')) return
+                try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* 仍清本地态 */ }
+                setQuotes([]); setParams([]); setDrawings([]); setParamLib(initParamLib(SEED_PARAMS))
+                set业务员(''); setLoaded(false); setPage({ name: 'dashboard' })
+                setAuth(null)
+              }}>⎋ 退出登录</button>
           </div>
         </div>
       </div>
 
       {/* 主内容区 */}
       <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
-        <div style={{ marginBottom: 14 }}>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>
-            {NAV.find(n => n.id === page.name)?.label ?? (page.name === 'quoteDetail' ? '报价详情' : '')}
-          </h1>
-        </div>
+        {(() => {
+          // 详情页自带标题，不显示外层 h1
+          const noHeader = ['quoteDetail', 'productDetail'].includes(page.name)
+          const label = NAV.find(n => n.id === page.name)?.label ?? ''
+          return !noHeader && label ? (
+            <div style={{ marginBottom: 14 }}>
+              <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800 }}>{label}</h1>
+            </div>
+          ) : null
+        })()}
         {renderPage()}
       </div>
     </div>
