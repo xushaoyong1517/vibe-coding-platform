@@ -4085,214 +4085,187 @@ function PageQuoteItems({ quotes, drawings, setPage }: {
 // PAGE: 首页 Dashboard
 // ════════════════════════════════════════════════════
 
-function PageDashboard({ quotes, drawings, setPage }: {
+function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
   quotes: Quote[]
   drawings: DrawingTemplate[]
   setPage: (p: PageState) => void
+  业务员: string
 }) {
-  const [selectedDay, setSelectedDay] = useState<string | null>(null)
+  const [seg, setSeg] = useState<string>('全部')
 
-  const yesterday = useMemo(() => {
-    const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10)
-  }, [])
-  const day30ago = useMemo(() => {
-    const d = new Date(); d.setDate(d.getDate() - 29); return d.toISOString().slice(0, 10)
-  }, [])
+  // 时间问候 / 日期（客户端）
+  const now = new Date()
+  const greet = now.getHours() < 12 ? '上午好' : now.getHours() < 18 ? '下午好' : '晚上好'
+  const weekday = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][now.getDay()]
+  const todayStr = now.toISOString().slice(0, 10)
+  const weekStartStr = useMemo(() => {
+    const d = new Date(now); d.setDate(now.getDate() - ((now.getDay() + 6) % 7)); return d.toISOString().slice(0, 10)
+  }, [now])
 
-  const yesterdayQuotes = useMemo(() => quotes.filter(q => q.日期 === yesterday), [quotes, yesterday])
-  const yesterdayItems  = useMemo(() => yesterdayQuotes.reduce((s, q) => s + q.items.length, 0), [yesterdayQuotes])
-  const totalItems      = useMemo(() => quotes.reduce((s, q) => s + q.items.length, 0), [quotes])
-
-  const chartData = useMemo(() => {
-    const days = []
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i)
-      const date = d.toISOString().slice(0, 10)
-      const dq = quotes.filter(q => q.日期 === date)
-      days.push({
-        date,
-        label: `${d.getMonth() + 1}/${d.getDate()}`,
-        报价单: dq.length,
-        报价明细: dq.reduce((s, q) => s + q.items.length, 0),
-      })
-    }
-    return days
-  }, [quotes])
-
-  const filteredItems = useMemo(() => {
-    const src = selectedDay
-      ? quotes.filter(q => q.日期 === selectedDay)
-      : quotes.filter(q => q.日期 >= day30ago)
-    return src.flatMap(q =>
+  // 草稿队列（工作台主角）：状态=草稿，逐条目展开
+  const draftRows = useMemo(() => {
+    return quotes.filter(q => q.状态 === '草稿').flatMap(q =>
       q.items.map((item, idx) => {
         const bom = q.bomData?.[idx]
-        const drawing = bom?.drawing_id
-          ? drawings.find(d => d.id === bom.drawing_id)
-          : matchDrawing(item, drawings)
+        const drawing = bom?.drawing_id ? drawings.find(d => d.id === bom.drawing_id) : matchDrawing(item, drawings)
         return {
-          id: `${q.id}-${idx}`,
-          _quoteId: q.id,
-          _quote: q,
-          _drawingPdf: drawing?.pdf_url ?? null,
-          _hasBom: (bom?.bom?.length ?? 0) > 0,
-          订单号: q.订单号,
-          日期: q.日期,
-          客户: q.客户,
-          类型: item.类型,
-          规格: item.规格 || item.工厂编号 || `DN${item.DN}`,
-          spec: `DN${item.DN} · ${item.压力}LB`,
-          数量: item.数量,
-          主体: item.主体,
-          件号: item.件号 || '—',
-          状态: q.状态,
+          id: `${q.id}-${idx}`, _quote: q,
+          订单号: q.订单号, 日期: q.日期, 客户: q.客户,
+          类型: item.类型, 规格: item.规格 || item.工厂编号 || `DN${item.DN}`,
+          spec: `DN${item.DN} · ${item.压力}LB`, 数量: item.数量 || 1,
+          主体: item.主体, 件号: item.件号 || '—', hasImg: !!drawing?.pdf_url,
         }
       })
     )
-  }, [quotes, drawings, selectedDay, day30ago])
+  }, [quotes, drawings])
+
+  const segTypes = useMemo(() => ['全部', ...Array.from(new Set(draftRows.map(r => r.类型)))], [draftRows])
+  const shownRows = useMemo(() => seg === '全部' ? draftRows : draftRows.filter(r => r.类型 === seg), [draftRows, seg])
+  const draftCount = draftRows.length
+
+  // 按日期分组（最近优先）
+  const grouped = useMemo(() => {
+    const m = new Map<string, typeof shownRows>()
+    for (const r of shownRows) { if (!m.has(r.日期)) m.set(r.日期, []); m.get(r.日期)!.push(r) }
+    return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]))
+  }, [shownRows])
+
+  // 今日数据
+  const todayItems = useMemo(() => quotes.filter(q => q.日期 === todayStr).reduce((s, q) => s + q.items.length, 0), [quotes, todayStr])
+  const weekQuotes = useMemo(() => quotes.filter(q => q.日期 >= weekStartStr).length, [quotes, weekStartStr])
+  const totalItems = useMemo(() => quotes.reduce((s, q) => s + q.items.length, 0), [quotes])
+
+  // 最近活动（由报价单派生）
+  const feed = useMemo(() =>
+    [...quotes].sort((a, b) => (b.日期 + b.id).localeCompare(a.日期 + a.id)).slice(0, 5).map(q => ({
+      id: q.id, q,
+      label: q.状态 === '已确认' ? `${q.订单号} 已提交报价单` : `${q.订单号} 新建草稿（${q.客户}）`,
+      color: q.状态 === '已确认' ? C.green : C.blue, date: q.日期,
+    })), [quotes])
+
+  const dayLabel = (d: string) => d === todayStr ? `今天 · ${d.slice(5)}` : d.slice(5)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* 顶部4指标 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
-        {([
-          { val: yesterdayItems,        label: '昨天报价明细', color: C.blue },
-          { val: yesterdayQuotes.length, label: '昨天报价单',  color: C.accent },
-          { val: totalItems,            label: '历史报价明细', color: C.green },
-          { val: drawings.length,       label: '小样图数',     color: C.amber },
-        ] as { val: number; label: string; color: string }[]).map(({ val, label, color }) => (
-          <Card key={label}>
-            <div style={{ textAlign: 'center', padding: '8px 0' }}>
-              <div style={{ fontSize: 28, fontWeight: 800, color, fontFamily: "'DM Mono',monospace" }}>{val}</div>
-              <div style={{ fontSize: 12, color: C.textDim, marginTop: 4 }}>{label}</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* 问候条 */}
+      <div>
+        <span style={{ fontSize: 22, fontWeight: 800 }}>{greet}{业务员 ? `，${业务员}` : ''} 👋</span>
+        <span style={{ fontSize: 13, color: C.textLight, marginLeft: 10 }}>
+          {weekday} · {todayStr} · {draftCount > 0 ? <>今天有 <b style={{ color: C.accent }}>{draftCount}</b> 张草稿待处理</> : '暂无待处理草稿'}
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, alignItems: 'start' }}>
+        {/* 左：草稿队列（主角） */}
+        <Card
+          title={<span>待办 · 待提交报价 <Tag color={C.accent}>{draftCount}</Tag></span>}
+          extra={
+            <div style={{ display: 'flex', gap: 3, background: '#f1f2f4', borderRadius: 7, padding: 3 }}>
+              {segTypes.slice(0, 4).map(t => (
+                <button key={t} onClick={() => setSeg(t)}
+                  style={{ border: 0, background: seg === t ? '#fff' : 'transparent', color: seg === t ? C.text : C.textDim, fontWeight: seg === t ? 600 : 400, fontFamily: 'inherit', fontSize: 12, padding: '4px 11px', borderRadius: 5, cursor: 'pointer', boxShadow: seg === t ? '0 1px 2px rgba(0,0,0,0.08)' : 'none' }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          {draftCount === 0 ? (
+            <div style={{ textAlign: 'center', padding: '34px 0', color: C.textLight }}>
+              <div style={{ fontSize: 13, marginBottom: 12 }}>今天没有待处理的草稿 🎉</div>
+              <Btn onClick={() => setPage({ name: 'newQuote' })}>+ 开始新报价</Btn>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+              {grouped.map(([date, rows]) => (
+                <div key={date} style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                  <div style={{ fontSize: 12, color: C.textLight, fontWeight: 600, letterSpacing: '.5px', marginTop: 2 }}>{dayLabel(date)}</div>
+                  {rows.map(r => (
+                    <div key={r.id}
+                      onClick={() => setPage({ name: 'quoteDetail', data: r._quote })}
+                      style={{ display: 'flex', alignItems: 'center', gap: 14, background: '#fff', border: `1px solid ${C.border}`, borderLeft: `3px solid ${C.accent}`, borderRadius: 9, padding: '13px 16px', cursor: 'pointer', transition: 'box-shadow .15s, transform .12s' }}
+                      onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(20,24,28,0.08)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                      onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.transform = 'none' }}
+                    >
+                      <div style={{ textAlign: 'center', minWidth: 30 }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: C.text, fontFamily: "'DM Mono',monospace" }}>{r.数量}</div>
+                        <div style={{ fontSize: 10, color: C.textLight }}>数量</div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace", fontSize: 14 }}>{r.订单号}</span>
+                          <Tag color={C.tag[r.类型] ?? C.blue}>{r.类型}</Tag>
+                          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 13, color: C.textDim, whiteSpace: 'nowrap' }}>{r.规格}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: C.textLight, marginTop: 4, display: 'flex', gap: '4px 8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span style={{ fontFamily: "'DM Mono',monospace" }}>{r.spec}</span><span>·</span>
+                          <span>主体 {r.主体}</span><span>·</span>
+                          <span>件号 {r.件号}</span><span>·</span>
+                          <span>{r.客户}</span>
+                          {r.hasImg && <Tag color={C.amber}>含小样图</Tag>}
+                        </div>
+                      </div>
+                      <Btn small onClick={() => setPage({ name: 'quoteDetail', data: r._quote })}>继续编辑</Btn>
+                      <span style={{ color: C.blue, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}
+                        onClick={e => { e.stopPropagation(); setPage({ name: 'quoteDetail', data: r._quote }) }}>查看BOM</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
+
+        {/* 右栏 */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* 新建报价 CTA */}
+          <div style={{ background: `linear-gradient(135deg, ${C.accent}, #a8481d)`, color: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 16px rgba(20,24,28,0.12)' }}>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>开始新的报价</div>
+            <div style={{ fontSize: 12.5, opacity: 0.85, margin: '6px 0 14px', lineHeight: 1.5 }}>选择阀门类型与规格，系统自动匹配参数并生成 BOM。</div>
+            <button onClick={() => setPage({ name: 'newQuote' })}
+              style={{ background: '#fff', color: C.accent, border: 0, borderRadius: 8, padding: '11px 0', width: '100%', fontWeight: 700, fontSize: 14, fontFamily: 'inherit', cursor: 'pointer' }}>
+              ＋ 新建报价
+            </button>
+          </div>
+
+          {/* 今日数据 */}
+          <Card title="今日数据">
+            <div style={{ padding: '0 2px' }}>
+              {([
+                ['今日报价明细', todayItems, C.blue],
+                ['本周报价单', weekQuotes, C.amber],
+                ['历史报价明细', totalItems, C.green],
+                ['小样图数', drawings.length, C.accent],
+              ] as [string, number, string][]).map(([label, val, color], i, arr) => (
+                <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '11px 0', borderBottom: i < arr.length - 1 ? `1px solid ${C.borderLight}` : 'none' }}>
+                  <span style={{ fontSize: 13, color: C.textDim }}>{label}</span>
+                  <span style={{ fontSize: 20, fontWeight: 800, color, fontFamily: "'DM Mono',monospace" }}>{val}</span>
+                </div>
+              ))}
             </div>
           </Card>
-        ))}
-      </div>
 
-      {/* 图表 + 快捷操作 */}
-      <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 12 }}>
-        <Card title={
-          <span>
-            最近30天报价
-            {selectedDay && (
-              <span style={{ marginLeft: 10, fontSize: 11, fontWeight: 400, color: C.accent }}>
-                已选 {selectedDay}
-                <span
-                  style={{ marginLeft: 6, cursor: 'pointer', color: C.blue, textDecoration: 'underline' }}
-                  onClick={() => setSelectedDay(null)}
-                >清除</span>
-              </span>
-            )}
-          </span>
-        }>
-          <ResponsiveContainer width="100%" height={180}>
-            <ComposedChart
-              data={chartData}
-              margin={{ top: 6, right: 16, bottom: 0, left: 0 }}
-              style={{ cursor: 'pointer' }}
-              onClick={e => {
-                // activePayload is populated when cursor is on a data point; fall back to activeLabel
-                const date =
-                  (e?.activePayload?.[0]?.payload as { date?: string } | undefined)?.date ??
-                  chartData.find(d => d.label === e?.activeLabel)?.date
-                if (date) setSelectedDay(prev => prev === date ? null : date)
-              }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke={C.borderLight} vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={4} axisLine={false} tickLine={false} />
-              <YAxis
-                allowDecimals={false}
-                tick={{ fontSize: 10 }}
-                width={28}
-                axisLine={false}
-                tickLine={false}
-                tickFormatter={(v: number) => String(Math.round(v))}
-              />
-              <Tooltip
-                formatter={(val: unknown, name: string) => [val, name]}
-                labelFormatter={(_: unknown, payload: {payload?: {date?: string}}[]) => payload?.[0]?.payload?.date ?? ''}
-              />
-              <Line dataKey="报价明细" stroke={C.blue}   strokeWidth={2} connectNulls
-                dot={(p: {cx:number;cy:number;value:number}) => p.value > 0 ? <circle key={`bm-${p.cx}`} cx={p.cx} cy={p.cy} r={3} fill={C.blue} /> : <g key={`bm-${p.cx}`}/>}
-                activeDot={{ r: 4 }} />
-              <Line dataKey="报价单"   stroke={C.accent} strokeWidth={2} connectNulls
-                dot={(p: {cx:number;cy:number;value:number}) => p.value > 0 ? <circle key={`bq-${p.cx}`} cx={p.cx} cy={p.cy} r={3} fill={C.accent} /> : <g key={`bq-${p.cx}`}/>}
-                activeDot={{ r: 4 }} />
-            </ComposedChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card title="快捷操作">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '4px 0' }}>
-            <Btn onClick={() => setPage({ name: 'newQuote' })} style={{ width: '100%', fontSize: 14 }}>+ 新建报价</Btn>
-            <Btn variant="secondary" onClick={() => setPage({ name: 'quotes' })} style={{ width: '100%' }}>查看报价单</Btn>
-            <Btn variant="ghost" onClick={() => setPage({ name: 'drawings' })} style={{ width: '100%' }}>查看小样图</Btn>
-          </div>
-        </Card>
-      </div>
-
-      {/* 报价明细表 */}
-      <Card title={
-        selectedDay
-          ? `报价明细 · ${selectedDay}（${filteredItems.length} 行）`
-          : `报价明细 · 近30天（${filteredItems.length} 行）`
-      }>
-        {filteredItems.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 30, color: C.textLight }}>
-            {selectedDay ? '当日无报价明细' : '近30天暂无报价明细'}
-          </div>
-        ) : (
-          <DataTable
-            columns={[
-              {
-                title: '订单号', key: '订单号',
-                render: (v, row) => {
-                  const q = quotes.find(x => x.id === (row._quoteId as string))
-                  return (
-                    <span
-                      style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace", cursor: q ? 'pointer' : 'default', textDecoration: q ? 'underline' : 'none' }}
-                      onClick={() => q && setPage({ name: 'quoteDetail', data: q })}
-                    >{v as string}</span>
-                  )
-                },
-              },
-              { title: '日期', key: '日期' },
-              { title: '客户', key: '客户' },
-              { title: '类型', key: '类型', render: v => <Tag color={C.tag[v as string] ?? C.blue}>{v as string}</Tag> },
-              { title: '规格', key: '规格', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as string}</span> },
-              { title: 'DN·压力', key: 'spec', render: v => <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textDim }}>{v as string}</span> },
-              { title: '数量', key: '数量', render: v => <span style={{ fontFamily: "'DM Mono',monospace" }}>{v as number}</span> },
-              { title: '主体', key: '主体' },
-              { title: '件号', key: '件号', render: v => <Tag color={C.amber}>{v as string}</Tag> },
-              { title: '状态', key: '状态', render: v => <Tag color={C.status[v as string] ?? C.textDim}>{v as string}</Tag> },
-              {
-                title: '操作', key: '_quote',
-                render: (_v, row) => {
-                  const q = (row as { _quote?: Quote })._quote
-                  const pdf = (row as { _drawingPdf?: string | null })._drawingPdf
-                  return (
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                      {q && (
-                        <span
-                          style={{ fontSize: 12, color: C.blue, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                          onClick={() => setPage({ name: 'quoteDetail', data: q })}
-                        >查看BOM</span>
-                      )}
-                      {pdf && (
-                        <span
-                          style={{ fontSize: 12, color: C.green, cursor: 'pointer', whiteSpace: 'nowrap' }}
-                          onClick={() => window.open(pdf, '_blank')}
-                        >预览小样图</span>
-                      )}
+          {/* 最近活动 */}
+          <Card title="最近活动">
+            {feed.length === 0 ? <div style={{ fontSize: 12, color: C.textLight }}>暂无活动</div> : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {feed.map(f => (
+                  <div key={f.id} onClick={() => setPage({ name: 'quoteDetail', data: f.q })}
+                    style={{ display: 'flex', gap: 10, padding: '8px 4px', fontSize: 13, cursor: 'pointer', borderRadius: 5 }}
+                    onMouseEnter={e => (e.currentTarget.style.background = '#fafaf7')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: f.color, marginTop: 5, flexShrink: 0 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ color: C.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.label}</div>
+                      <div style={{ fontSize: 11, color: C.textLight, marginTop: 2 }}>{f.date}</div>
                     </div>
-                  )
-                },
-              },
-            ]}
-            data={filteredItems}
-          />
-        )}
-      </Card>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
     </div>
   )
 }
@@ -4458,7 +4431,7 @@ export function ValveQuoteApp() {
 
   const renderPage = () => {
     switch (page.name) {
-      case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setPage={setPage} />
+      case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setPage={setPage} 业务员={业务员} />
       case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} tenantId={auth.tenant_id} />
       case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
       case 'quoteDetail': return <PageQuoteDetail quote={page.data} goBack={() => setPage({ name: 'quotes' })} drawings={drawings} />
@@ -4569,7 +4542,7 @@ export function ValveQuoteApp() {
       <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
         {(() => {
           // 详情页自带标题，不显示外层 h1
-          const noHeader = ['quoteDetail', 'productDetail'].includes(page.name)
+          const noHeader = ['quoteDetail', 'productDetail', 'dashboard'].includes(page.name)
           const label = NAV.find(n => n.id === page.name)?.label ?? ''
           return !noHeader && label ? (
             <div style={{ marginBottom: 14 }}>
