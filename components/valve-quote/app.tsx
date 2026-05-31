@@ -1401,15 +1401,47 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   const findMatch = (item: QuoteItem) =>
     params.find(p => p.类型 === item.类型 && p.DN === item.DN && p.压力 === item.压力 && p.主体 === item.主体 && p.阀瓣阀闸 === item.阀瓣阀闸)
 
-  const steps = ['① 输入客户需求', '② 确认参数', '③ 生成BOM']
+  // ── BOM 来源分类（牌1 蓝 / 牌2 金 / 通用 灰）+ popover 说明 ──
+  const classifySrc = (src: string): { kind: 'p1' | 'p2' | 'gen'; label: string; color: string } => {
+    if (/牌2/.test(src)) return { kind: 'p2', label: '牌2', color: C.amber }
+    if (/牌1/.test(src)) return { kind: 'p1', label: '牌1', color: C.blue }
+    return { kind: 'gen', label: '通用', color: C.textLight }
+  }
+  const SRC_EXPLAIN: Record<'p1' | 'p2' | 'gen', { name: string; rule: string; cond: string }> = {
+    p1: { name: '牌1 · 主体材质类', rule: '阀体/阀盖/螺柱/螺母/垫片等结构件由主体材质族直接决定', cond: '行业标准材质对应（ASTM/GB）' },
+    p2: { name: '牌2 · API600 件号', rule: '阀座/阀瓣密封面、阀杆、上密封座等可换件由件号(trim#)决定', cond: 'API600 标准件号定义' },
+    gen: { name: '通用件', rule: '与规格无关的标准通用件', cond: '手轮 / 阀杆螺母 等' },
+  }
+  const [srcPop, setSrcPop] = useState<{ kind: 'p1' | 'p2' | 'gen'; detail: string; x: number; y: number } | null>(null)
+
+  // ── 置信度确认：AI 待确认字段 ──
+  const confirmField = (idx: number, field: string) =>
+    setExtracted(prev => prev ? prev.map((it, i) => i === idx ? { ...it, 待确认: (it.待确认 ?? []).filter(f => f !== field) } : it) : prev)
+  const confirmAllFields = () =>
+    setExtracted(prev => prev ? prev.map(it => ({ ...it, 待确认: [] })) : prev)
+  const isInfer = (item: QuoteItem, label: string, field: string) =>
+    (item.待确认 ?? []).some(c => c === field || c === label || c.includes(label) || label.includes(c))
+  const inferTotal = extracted ? extracted.reduce((n, it) => n + (it.待确认?.length ?? 0), 0) : 0
+
+  const STEPS = ['输入客户需求', '确认参数', '生成 BOM']
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {/* 步骤指示器 */}
-      <div style={{ display: 'flex', gap: 4 }}>
-        {steps.map((s, i) => (
-          <div key={i} style={{ flex: 1, padding: '8px 12px', borderRadius: 6, fontSize: 13, fontWeight: i === step ? 700 : 400, background: i === step ? C.accent + '15' : i < step ? C.green + '12' : 'transparent', color: i === step ? C.accent : i < step ? C.green : C.textLight, borderBottom: i === step ? `2px solid ${C.accent}` : '2px solid transparent' }}>{s}</div>
-        ))}
+      {/* 步骤条 */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        {STEPS.map((s, i) => {
+          const active = i === step, done = i < step
+          return (
+            <div key={i}
+              onClick={() => { if (done) setStep(i) }}
+              style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 11, padding: '13px 18px', borderRadius: 10, background: active ? '#fff7f2' : '#fff', border: `1px solid ${active ? '#eac3a9' : C.border}`, cursor: done ? 'pointer' : 'default', boxShadow: '0 1px 2px rgba(20,24,28,0.04)' }}>
+              <span style={{ width: 24, height: 24, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, background: active ? C.accent : done ? C.green + '22' : '#eceef0', color: active ? '#fff' : done ? C.green : C.textLight }}>
+                {done ? '✓' : i + 1}
+              </span>
+              <span style={{ fontSize: 15, fontWeight: 700, color: active ? C.accent : done ? C.textDim : C.textLight }}>{s}</span>
+            </div>
+          )
+        })}
       </div>
 
       {error && <div style={{ padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#dc2626' }}>{error}</div>}
@@ -1515,6 +1547,14 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
           title={`参数提取结果（${extracted.length} 行）`}
           extra={<Btn variant="ghost" small onClick={() => { setStep(0); setExtracted(null) }}>← 重新输入</Btn>}
         >
+          {inferTotal > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 10, background: '#fffaf0', border: '1px solid #f0dcae', fontSize: 13, color: '#8a6a1e', marginBottom: 14 }}>
+              <span style={{ fontSize: 16 }}>⚠</span>
+              <span>共 <b style={{ color: '#6f5316' }}>{inferTotal}</b> 个 <b>AI 推断字段</b>请你确认（金色高亮）。已确认无误即可生成 BOM。</span>
+              <span style={{ flex: 1 }} />
+              <span onClick={confirmAllFields} style={{ fontSize: 12.5, color: C.amber, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>全部确认无误 →</span>
+            </div>
+          )}
           {extracted.map((item, idx) => {
             const match = findMatch(item)
             const isEditing = editingIdx === idx
@@ -1583,13 +1623,20 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
                     {FIELDS.map(([label, field]) => {
                       const fi = issueMap[field]
-                      const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : '#fff'
-                      const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : C.borderLight
-                      const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : C.textLight
+                      const infer = !fi && isInfer(item, label, field as string)
+                      const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : infer ? '#fffaf0' : '#fff'
+                      const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : infer ? '#f0dcae' : C.borderLight
+                      const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : infer ? C.amber : C.textLight
                       return (
                         <div key={field} style={{ background: bg, padding: '4px 8px', borderRadius: 4, border: `1px solid ${border}` }}>
-                          <div style={{ fontSize: 10, color: lc }}>{fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''}{label}</div>
-                          <div style={{ fontWeight: 600 }}>{String(item[field] || '—')}</div>
+                          <div style={{ fontSize: 10, color: lc, display: 'flex', alignItems: 'center', gap: 4 }}>
+                            <span>{fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''}{label}</span>
+                            {infer && (
+                              <span onClick={() => confirmField(idx, field as string)} title="点击确认无误"
+                                style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.amber, padding: '1px 5px', borderRadius: 3, cursor: 'pointer' }}>推断 ✓</span>
+                            )}
+                          </div>
+                          <div style={{ fontWeight: 600, background: infer ? '#fdeecb' : 'transparent', borderRadius: 3, padding: infer ? '0 3px' : 0, marginTop: 1 }}>{String(item[field] || '—')}</div>
                         </div>
                       )
                     })}
@@ -1715,7 +1762,16 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                             )}
                           </td>
                           <td style={{ padding: '6px 10px' }}>
-                            <Tag color={row.来源?.includes('牌1') ? C.blue : row.来源?.includes('牌2') ? C.amber : C.textLight}>{row.来源}</Tag>
+                            {(() => {
+                              const s = classifySrc(row.来源 || '')
+                              return (
+                                <span
+                                  onClick={e => { const rc = e.currentTarget.getBoundingClientRect(); setSrcPop({ kind: s.kind, detail: row.来源 || '', x: Math.min(rc.left, window.innerWidth - 296), y: rc.bottom + 6 }) }}
+                                  title="点击查看来源依据"
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, fontWeight: 600, padding: '3px 9px', borderRadius: 6, cursor: 'pointer', background: s.color + '1e', color: s.color }}
+                                >{row.来源 || s.label}</span>
+                              )
+                            })()}
                           </td>
                         </tr>
                       ))}
@@ -1749,6 +1805,28 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
           </Card>
         </div>
       )}
+
+      {/* 来源依据 popover */}
+      {srcPop && (() => {
+        const e = SRC_EXPLAIN[srcPop.kind]
+        const col = srcPop.kind === 'p1' ? C.blue : srcPop.kind === 'p2' ? C.amber : C.textLight
+        return (
+          <>
+            <div onClick={() => setSrcPop(null)} style={{ position: 'fixed', inset: 0, zIndex: 199 }} />
+            <div style={{ position: 'fixed', left: srcPop.x, top: srcPop.y, zIndex: 200, width: 280, background: '#fff', border: `1px solid ${C.border}`, borderRadius: 11, boxShadow: '0 12px 32px rgba(20,24,28,0.16)', overflow: 'hidden' }}>
+              <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.borderLight}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11.5, fontWeight: 600, padding: '2px 8px', borderRadius: 5, background: col + '1e', color: col }}>{e.name.split(' · ')[0]}</span>
+                <span style={{ fontWeight: 700, fontSize: 13 }}>{e.name.split(' · ')[1] ?? ''}</span>
+              </div>
+              <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 9, fontSize: 12.5 }}>
+                <div style={{ display: 'flex', gap: 9 }}><span style={{ color: C.textLight, width: 52, flexShrink: 0 }}>合成规则</span><span style={{ color: C.textDim, lineHeight: 1.5 }}>{e.rule}</span></div>
+                <div style={{ display: 'flex', gap: 9 }}><span style={{ color: C.textLight, width: 52, flexShrink: 0 }}>本行依据</span><span style={{ color: C.text, lineHeight: 1.5, fontFamily: "'DM Mono',monospace" }}>{srcPop.detail || '—'}</span></div>
+                <div style={{ display: 'flex', gap: 9 }}><span style={{ color: C.textLight, width: 52, flexShrink: 0 }}>适用条件</span><span style={{ color: C.textDim, lineHeight: 1.5 }}>{e.cond}</span></div>
+              </div>
+            </div>
+          </>
+        )
+      })()}
     </div>
   )
 }
