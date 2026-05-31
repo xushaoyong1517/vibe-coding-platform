@@ -498,6 +498,7 @@ type PageState =
   | { name: 'newQuote' }
   | { name: 'quotes' }
   | { name: 'quoteDetail'; data: Quote }
+  | { name: 'quoteLine'; data: { quoteId: string; lineIdx: number } }
   | { name: 'quoteItems' }
   | { name: 'params' }
   | { name: 'productDetail'; data: ValveProduct }
@@ -3778,223 +3779,276 @@ function PageQuotes({ quotes, setQuotes, setPage }: {
   )
 }
 
-function PageQuoteDetail({ quote, goBack, drawings }: { quote: Quote; goBack: () => void; drawings: DrawingTemplate[] }) {
-  const [expandIdx, setExpandIdx] = useState<number | null>(0)
-  const [generating, setGenerating] = useState<string | null>(null)
+// ── 就地编辑输入框（草稿+失焦提交，回车确认）──
+function InlineInput({ value, onCommit, mono, placeholder, type, style }: {
+  value: string; onCommit: (v: string) => void; mono?: boolean; placeholder?: string; type?: string; style?: React.CSSProperties
+}) {
+  const [v, setV] = useState(value)
+  useEffect(() => { setV(value) }, [value])
+  return (
+    <input
+      value={v} placeholder={placeholder ?? '—'} type={type}
+      onChange={e => setV(e.target.value)}
+      onBlur={e => { e.currentTarget.style.borderColor = 'transparent'; e.currentTarget.style.background = 'transparent'; if (v !== value) onCommit(v) }}
+      onFocus={e => { e.currentTarget.style.borderColor = C.accent; e.currentTarget.style.background = '#fff' }}
+      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+      style={{ border: '1px solid transparent', borderRadius: 5, padding: '2px 5px', margin: '-2px -5px', font: 'inherit', fontWeight: 600, fontFamily: mono ? "'DM Mono',monospace" : 'inherit', background: 'transparent', outline: 'none', width: '100%', color: C.text, ...style }}
+    />
+  )
+}
 
-  const handleGeneratePdf = async (item: QuoteItem, tpl: DrawingTemplate, preview = false) => {
-    const qs = new URLSearchParams({
-      客户: quote.客户,
-      日期: quote.日期,
-      订单号: quote.订单号,
-      DN: `DN${item.DN}`,
-      压力: `${item.压力}LB`,
-      主体: item.主体,
-      阀杆: item.阀杆轴 ?? '',
+// BOM 来源 → 颜色（牌1蓝 / 牌2金 / 通用灰）
+function bomSrcColor(src: string): string {
+  if (/牌2/.test(src)) return C.amber
+  if (/牌1/.test(src)) return C.blue
+  return C.textLight
+}
+// 摘要卡关键参数
+const SUM_KEY_FIELDS: [string, keyof QuoteItem][] = [
+  ['主体', '主体'], ['阀座', '阀座'], ['阀瓣/闸', '阀瓣阀闸'], ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'],
+]
+const QUOTE_STATUSES = ['草稿', '报价中', '已确认', '已下单']
+
+function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
+  quote: Quote
+  setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
+  persist: (q: Quote) => void
+  goBack: () => void
+  setPage: (p: PageState) => void
+}) {
+  const update = (next: Quote) => { setQuotes(qs => qs.map(q => q.id === next.id ? next : q)); persist(next) }
+  const patch = (p: Partial<Quote>) => update({ ...quote, ...p })
+  const totalUnits = quote.items.reduce((s, i) => s + (i.数量 || 0), 0)
+
+  const printBom = async () => {
+    const res = await fetch(`/api/quotes/${quote.id}/print`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(quote),
     })
-    if (preview) {
-      // GET 请求直接在新 Tab 打开 PDF，浏览器原生显示，无需 blob
-      window.open(`/api/drawings/${tpl.id}/fill?${qs}`, '_blank')
-      return
-    }
-    // 下载：POST 保留原有逻辑
-    setGenerating(tpl.id)
-    try {
-      const res = await fetch(`/api/drawings/${tpl.id}/fill?mode=download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.fromEntries(qs)),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: '生成失败' }))
-        alert(err.error ?? '生成失败')
-        return
-      }
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url; a.download = `${tpl.name}-${quote.客户}.pdf`; a.click()
-      setTimeout(() => URL.revokeObjectURL(url), 30000)
-    } catch (e) {
-      alert('生成失败: ' + (e as Error).message)
-    } finally {
-      setGenerating(null)
-    }
+    if (!res.ok) { alert((await res.json()).error); return }
+    const html = await res.text()
+    const w = window.open('', '_blank'); w?.document.write(html); w?.document.close()
   }
 
+  const fields: [string, React.ReactNode][] = [
+    ['订单号', <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700 }}>{quote.订单号}</span>],
+    ['客户', <InlineInput value={quote.客户} onCommit={v => patch({ 客户: v })} />],
+    ['联系人', <InlineInput value={quote.联系人 ?? ''} onCommit={v => patch({ 联系人: v })} placeholder="填写联系人" />],
+    ['日期', <InlineInput value={quote.日期} onCommit={v => patch({ 日期: v })} mono />],
+    ['交期', <InlineInput value={quote.交期 ?? ''} onCommit={v => patch({ 交期: v })} mono placeholder="—" />],
+    ['台计', <span style={{ fontWeight: 700 }}>{totalUnits} 台</span>],
+    ['状态', <span style={{ fontWeight: 700 }}>{quote.状态}</span>],
+    ['明细行数', <span style={{ fontWeight: 700 }}>{quote.items.length} 行</span>],
+  ]
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 返回 + 状态 + 打印 */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* 顶部栏 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <Btn variant="ghost" small onClick={goBack}>← 返回</Btn>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800 }}>{quote.订单号}</h2>
-        <Tag color={C.status[quote.状态] ?? C.textDim}>{quote.状态}</Tag>
+        <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 800 }}>{quote.订单号}</span>
+        <select value={quote.状态} onChange={e => patch({ 状态: e.target.value })}
+          style={{ border: `1px solid ${C.border}`, borderRadius: 999, padding: '3px 10px', fontSize: 12, fontWeight: 600, color: C.status[quote.状态] ?? C.textDim, background: (C.status[quote.状态] ?? C.textLight) + '1e', cursor: 'pointer', fontFamily: 'inherit' }}>
+          {QUOTE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
         <div style={{ flex: 1 }} />
-        {quote.bomData?.length ? (
-          <Btn variant="secondary" small onClick={async () => {
-            const res = await fetch(`/api/quotes/${quote.id}/print`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(quote),
-            })
-            if (!res.ok) { alert((await res.json()).error); return }
-            const html = await res.text()
-            const w = window.open('', '_blank')
-            w?.document.write(html)
-            w?.document.close()
-          }}>🖨 打印 BOM 明细</Btn>
-        ) : null}
+        <Btn variant="ghost" small onClick={() => alert('复制报价单（即将上线）')}>复制</Btn>
+        {quote.bomData?.length ? <Btn variant="secondary" small onClick={printBom}>🖨 打印 / 导出 PDF</Btn> : null}
       </div>
 
-      {/* 报价单表头 */}
+      {/* 报价单信息（可编辑） */}
       <Card title="报价单信息">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
-          {([
-            ['订单号', quote.订单号],
-            ['客户', quote.客户],
-            ['联系人', quote.联系人 || '—'],
-            ['日期', quote.日期],
-            ['交期', quote.交期 || '—'],
-            ['台计', `${quote.台计} 台`],
-            ['状态', quote.状态],
-            ['明细行数', `${quote.items.length} 行`],
-          ] as [string, string][]).map(([k, v]) => (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 18 }}>
+          {fields.map(([k, node]) => (
             <div key={k}>
-              <div style={{ fontSize: 11, color: C.textLight, marginBottom: 2 }}>{k}</div>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{v}</div>
+              <div style={{ fontSize: 11, color: C.textLight, marginBottom: 4 }}>{k}</div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{node}</div>
             </div>
           ))}
         </div>
-        {quote.原始需求 && (
-          <div style={{ marginTop: 12, padding: '8px 12px', background: '#fafaf7', borderRadius: 6, borderLeft: `3px solid ${C.border}` }}>
-            <div style={{ fontSize: 11, color: C.textLight, marginBottom: 4 }}>客户原始需求</div>
-            <div style={{ fontSize: 12, color: C.textDim, whiteSpace: 'pre-wrap' }}>{quote.原始需求}</div>
+        <div style={{ marginTop: 14, background: '#fafaf7', borderRadius: 8, border: `1px solid ${C.borderLight}`, padding: '10px 12px' }}>
+          <div style={{ fontSize: 11, color: C.textLight, marginBottom: 4 }}>客户原始需求</div>
+          <textarea
+            defaultValue={quote.原始需求 ?? ''} placeholder="粘贴或填写客户原始询价内容…"
+            onBlur={e => { if (e.target.value !== (quote.原始需求 ?? '')) patch({ 原始需求: e.target.value }) }}
+            style={{ width: '100%', minHeight: 44, border: 'none', background: 'transparent', outline: 'none', resize: 'vertical', fontSize: 13, color: C.textDim, fontFamily: 'inherit', lineHeight: 1.6, boxSizing: 'border-box' }}
+          />
+        </div>
+      </Card>
+
+      {/* 报价明细摘要 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 800 }}>报价明细 <span style={{ fontSize: 13, fontWeight: 600, color: C.textLight, marginLeft: 6 }}>{quote.items.length} 行 · 共 {totalUnits} 台</span></h2>
+      </div>
+
+      {quote.items.map((item, idx) => {
+        const bom = quote.bomData?.[idx]
+        return (
+          <div key={idx}
+            onClick={() => setPage({ name: 'quoteLine', data: { quoteId: quote.id, lineIdx: idx } })}
+            style={{ display: 'flex', alignItems: 'stretch', background: '#fff', border: `1px solid ${C.border}`, borderRadius: 11, boxShadow: '0 1px 2px rgba(20,24,28,0.04)', cursor: 'pointer', transition: 'box-shadow .12s, border-color .12s' }}
+            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(20,24,28,0.08)'; e.currentTarget.style.borderColor = C.borderLight }}
+            onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 1px 2px rgba(20,24,28,0.04)'; e.currentTarget.style.borderColor = C.border }}>
+            <div style={{ width: 50, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'DM Mono',monospace", fontWeight: 700, color: C.textLight, borderRight: `1px solid ${C.borderLight}` }}>{idx + 1}</div>
+            <div style={{ flex: 1, minWidth: 0, padding: '14px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+                <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
+                <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 16, fontWeight: 700 }}>{item.规格 || item.工厂编号 || `DN${item.DN}`}</span>
+                <span style={{ color: C.textLight }}>×</span><span style={{ fontWeight: 800 }}>{item.数量}</span>
+                <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textLight, background: C.borderLight, borderRadius: 4, padding: '1px 7px' }}>DN{item.DN} · {item.压力}LB</span>
+                {item.件号 && <Tag color={C.amber}>件号 {item.件号}</Tag>}
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 11 }}>
+                {SUM_KEY_FIELDS.map(([label, f]) => (
+                  <span key={label} style={{ fontSize: 12, fontWeight: 700, color: C.text, background: '#fafaf7', border: `1px solid ${C.borderLight}`, borderRadius: 6, padding: '3px 9px' }}>
+                    <span style={{ fontWeight: 600, color: C.textLight, fontSize: 11, marginRight: 5 }}>{label}</span>{String(item[f] || '—')}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', justifyContent: 'space-between', padding: '14px 16px', borderLeft: `1px solid ${C.borderLight}`, gap: 10, minWidth: 130 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: C.textDim }}>BOM {bom?.bom?.length ?? 0} 项</span>
+              <span style={{ fontSize: 18, color: C.textLight }}>→</span>
+            </div>
+          </div>
+        )
+      })}
+      {quote.items.length === 0 && <div style={{ padding: 40, textAlign: 'center', color: C.textLight }}>暂无明细</div>}
+    </div>
+  )
+}
+
+// ════════════════════════════════════════════════════
+// PAGE: 报价明细详情（单条产品 · 确认参数 + 可编辑BOM · 可复用）
+// ════════════════════════════════════════════════════
+
+function PageQuoteLineDetail({ quote, lineIdx, setQuotes, persist, setPage }: {
+  quote: Quote
+  lineIdx: number
+  setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
+  persist: (q: Quote) => void
+  setPage: (p: PageState) => void
+}) {
+  const item = quote.items[lineIdx]
+  const bomRes = quote.bomData?.[lineIdx]
+  const total = quote.items.length
+
+  const update = (next: Quote) => { setQuotes(qs => qs.map(q => q.id === next.id ? next : q)); persist(next) }
+  const patchItem = (p: Partial<QuoteItem>) =>
+    update({ ...quote, items: quote.items.map((it, i) => i === lineIdx ? { ...it, ...p } : it) })
+  const patchBomRow = (ri: number, p: Partial<BOMRow>) => {
+    if (!quote.bomData) return
+    update({ ...quote, bomData: quote.bomData.map((b, i) => i === lineIdx ? { ...b, bom: b.bom.map((r, j) => j === ri ? { ...r, ...p } : r) } : b) })
+  }
+  const addBomRow = () => {
+    if (!quote.bomData) return
+    const seq = (bomRes?.bom.length ?? 0) + 1
+    update({ ...quote, bomData: quote.bomData.map((b, i) => i === lineIdx ? { ...b, bom: [...b.bom, { 序号: seq, 零件: '', 材质: '', 数量: 1, 来源: '通用·手动' }] } : b) })
+  }
+  const delBomRow = (ri: number) => {
+    if (!quote.bomData) return
+    update({ ...quote, bomData: quote.bomData.map((b, i) => i === lineIdx ? { ...b, bom: b.bom.filter((_, j) => j !== ri) } : b) })
+  }
+
+  const goLine = (i: number) => setPage({ name: 'quoteLine', data: { quoteId: quote.id, lineIdx: i } })
+  const PARAMS: [string, keyof QuoteItem][] = [
+    ['类型', '类型'], ['DN', 'DN'], ['压力', '压力'],
+    ['主体', '主体'], ['阀瓣/闸', '阀瓣阀闸'], ['阀座', '阀座'],
+    ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'], ['填料', '中腔填料'],
+  ]
+  const bomQty = bomRes?.bom.reduce((s, r) => s + (Number(r.数量) || 0), 0) ?? 0
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* 面包屑 + 上一条/下一条 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Btn variant="ghost" small onClick={() => setPage({ name: 'quoteDetail', data: quote })}>← 返回报价单</Btn>
+        <span style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span style={{ color: C.textLight, cursor: 'pointer' }} onClick={() => setPage({ name: 'quotes' })}>报价单</span>
+          <span style={{ color: C.textLight }}>/</span>
+          <span style={{ color: C.textLight, fontFamily: "'DM Mono',monospace", cursor: 'pointer' }} onClick={() => setPage({ name: 'quoteDetail', data: quote })}>{quote.订单号}</span>
+          <span style={{ color: C.textLight }}>/</span>
+          <span style={{ fontWeight: 800, fontFamily: "'DM Mono',monospace" }}>{item.规格 || item.工厂编号 || `DN${item.DN}`}</span>
+        </span>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Btn variant="ghost" small disabled={lineIdx === 0} onClick={() => goLine(lineIdx - 1)}>← 上一条</Btn>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.textLight, fontFamily: "'DM Mono',monospace" }}>{lineIdx + 1} / {total}</span>
+          <Btn variant="ghost" small disabled={lineIdx === total - 1} onClick={() => goLine(lineIdx + 1)}>下一条 →</Btn>
+        </div>
+      </div>
+
+      {/* 产品标题卡 */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
+          <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 24, fontWeight: 800, flex: 1 }}>
+            <InlineInput value={item.规格 || item.工厂编号 || ''} onCommit={v => patchItem({ 规格: v })} mono placeholder="产品型号" style={{ fontSize: 24, fontWeight: 800 }} />
+          </span>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 12, color: C.textLight }}>数量</span>
+            <span style={{ width: 70 }}><InlineInput value={String(item.数量)} onCommit={v => patchItem({ 数量: Number(v) || 1 })} mono style={{ fontSize: 22, fontWeight: 800 }} /></span>
+            <span style={{ fontSize: 13, color: C.textLight }}>台</span>
+          </div>
+        </div>
+      </Card>
+
+      {/* 确认参数（就地编辑） */}
+      <Card title={<span>确认参数 <span style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginLeft: 8 }}>决定阀门结构与材质</span></span>}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+          {PARAMS.map(([label, f]) => (
+            <div key={label} style={{ border: `1px solid ${C.borderLight}`, borderRadius: 8, padding: '9px 12px' }}>
+              <div style={{ fontSize: 11, color: C.textLight, marginBottom: 3 }}>{label}</div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>
+                <InlineInput value={String(item[f] ?? '')} onCommit={v => patchItem({ [f]: ['DN', '压力', '数量'].includes(f as string) ? (Number(v) || 0) : v } as Partial<QuoteItem>)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* 物料清单 BOM（可编辑） */}
+      <Card title={<span>物料清单 BOM <span style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginLeft: 8 }}>{bomRes?.bom.length ?? 0} 项 · 合计 {bomQty} 件</span></span>}
+        extra={bomRes ? <span style={{ fontSize: 12, color: C.textDim }}>牌1 {bomRes.牌1} · 牌2 {bomRes.牌2}</span> : null}>
+        {!bomRes ? (
+          <div style={{ padding: 20, textAlign: 'center', color: C.textLight, fontSize: 13 }}>该明细暂无 BOM。</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['#', '零件', '材质', '数量', '来源', ''].map(h => (
+                    <th key={h} style={{ padding: '8px 10px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {bomRes.bom.map((row, ri) => (
+                  <tr key={ri} style={{ borderBottom: `1px solid ${C.borderLight}` }} className="bom-row">
+                    <td style={{ padding: '6px 10px', color: C.textLight, fontFamily: "'DM Mono',monospace" }}>{ri + 1}</td>
+                    <td style={{ padding: '6px 10px', fontWeight: 700, minWidth: 90 }}><InlineInput value={row.零件} onCommit={v => patchBomRow(ri, { 零件: v })} placeholder="零件名" /></td>
+                    <td style={{ padding: '6px 10px', minWidth: 150 }}><InlineInput value={row.材质} onCommit={v => patchBomRow(ri, { 材质: v })} mono placeholder="材质" /></td>
+                    <td style={{ padding: '6px 10px', width: 70 }}><InlineInput value={String(row.数量 ?? 1)} onCommit={v => patchBomRow(ri, { 数量: Number(v) || 0 })} mono style={{ textAlign: 'center' }} /></td>
+                    <td style={{ padding: '6px 10px' }}>
+                      <span style={{ display: 'inline-flex', fontSize: 11.5, fontWeight: 600, padding: '3px 9px', borderRadius: 6, background: bomSrcColor(row.来源 || '') + '1e', color: bomSrcColor(row.来源 || '') }}>{row.来源 || '通用'}</span>
+                    </td>
+                    <td style={{ padding: '6px 10px', width: 36, textAlign: 'center' }}>
+                      <span onClick={() => delBomRow(ri)} title="删除该行" style={{ cursor: 'pointer', color: C.textLight, fontSize: 15 }}>✕</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button onClick={addBomRow} style={{ marginTop: 10, width: '100%', border: `1px dashed ${C.border}`, background: '#fafbfc', borderRadius: 8, padding: 10, color: C.textDim, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>＋ 添加零件行</button>
           </div>
         )}
       </Card>
 
-      {/* 每行明细 + 物料清单 */}
-      {quote.items.map((item, idx) => {
-        const bom = quote.bomData?.[idx]
-        const isOpen = expandIdx === idx
-        return (
-          <Card
-            key={idx}
-            title={
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => setExpandIdx(isOpen ? null : idx)}>
-                <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
-                <span style={{ fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{item.规格 || item.工厂编号 || `DN${item.DN}`}</span>
-                <span style={{ color: C.textDim }}>× {item.数量}</span>
-                <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: C.textLight, background: C.borderLight, borderRadius: 3, padding: '1px 6px' }}>DN{item.DN} · {item.压力}LB</span>
-                {item.件号 && <Tag color={C.amber}>{item.件号}</Tag>}
-                <span style={{ fontSize: 11, color: C.textLight, marginLeft: 4 }}>{isOpen ? '▼' : '▶'}</span>
-              </div>
-            }
-          >
-            {isOpen && (
-              <div>
-                {/* 确认参数 */}
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>确认参数</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
-                    {([
-                      ['类型', item.类型], ['DN', `DN${item.DN}`], ['压力', `${item.压力}LB`],
-                      ['主体', item.主体], ['阀瓣/阀闸', item.阀瓣阀闸], ['阀座', item.阀座],
-                      ['阀杆/轴', item.阀杆轴], ['螺柱', item.螺柱], ['填料', item.中腔填料],
-                    ] as [string, string][]).map(([k, v]) => (
-                      <div key={k} style={{ background: '#fafaf7', padding: '4px 8px', borderRadius: 4, border: `1px solid ${C.borderLight}` }}>
-                        <div style={{ fontSize: 10, color: C.textLight }}>{k}</div>
-                        <div style={{ fontWeight: 600 }}>{v || '—'}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 匹配小样图 */}
-                {(() => {
-                  // 优先用保存的 drawing_id，降级到实时匹配
-                  const tpl = bom?.drawing_id
-                    ? drawings.find(d => d.id === bom.drawing_id) ?? matchDrawing(item, drawings)
-                    : matchDrawing(item, drawings)
-                  if (!tpl) return (
-                    <div style={{ marginBottom: 12, padding: '8px 12px', background: '#fffbeb', borderRadius: 6, border: '1px solid #fde68a', fontSize: 12, color: '#92400e' }}>
-                      ⚠ 未找到匹配小样图（{item.类型} {item.压力}LB {item.驱动} DN{item.DN}）
-                    </div>
-                  )
-                  const noSkeleton = bom?.来源 !== 'template' && bom?.drawing_id === tpl.id
-                  return (
-                    <div style={{ marginBottom: 12 }}>
-                      <div style={{ padding: '10px 14px', background: '#f0fdf4', borderRadius: noSkeleton ? '6px 6px 0 0' : 6, border: '1px solid #86efac', display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <span style={{ fontSize: 18 }}>📐</span>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: '#166534' }}>
-                            小样图：{tpl.name}
-                            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: '#16a34a', fontFamily: 'monospace' }}>{tpl.id}</span>
-                          </div>
-                          <div style={{ fontSize: 11, color: '#16a34a' }}>{tpl.valve_type} · {tpl.pressure}LB · {tpl.actuator} · DN{tpl.dn_min}~{tpl.dn_max} · v{tpl.version}</div>
-                        </div>
-                        <Btn
-                          variant="ghost" small
-                          disabled={!tpl.pdf_url}
-                          style={{ opacity: tpl.pdf_url ? 1 : 0.5 }}
-                          onClick={() => handleGeneratePdf(item, tpl, true)}
-                        >
-                          {!tpl.pdf_url ? '待上传 PDF' : '预览小样图'}
-                        </Btn>
-                        <Btn
-                          variant="secondary" small
-                          onClick={() => handleGeneratePdf(item, tpl, false)}
-                          disabled={generating === tpl.id || !tpl.pdf_url}
-                        >
-                          {generating === tpl.id ? '生成中…' : '下载客户版 PDF'}
-                        </Btn>
-                      </div>
-                      {noSkeleton && (
-                        <div style={{ padding: '6px 14px', background: '#fffbeb', border: '1px solid #fde68a', borderTop: 'none', borderRadius: '0 0 6px 6px', fontSize: 11, color: '#92400e' }}>
-                          ⚠ 报价时该小样图 BOM 骨架为空，BOM 由 AI 自由生成（结构与小样图不一致）。建议在小样图库补全 BOM 骨架后重新生成报价。
-                        </div>
-                      )}
-                    </div>
-                  )
-                })()}
-
-                {/* 物料清单 */}
-                {bom && (
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: C.textDim, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 }}>
-                      物料清单 (BOM) · {bom.牌1} + {bom.牌2}
-                    </div>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                        <thead>
-                          <tr>
-                            {['#', '零件', '材质', '数量', '来源'].map(h => (
-                              <th key={h} style={{ padding: '6px 10px', textAlign: 'left', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {bom.bom.map((row, ri) => (
-                            <tr key={ri} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
-                              <td style={{ padding: '5px 10px', color: C.textDim, fontFamily: "'DM Mono',monospace" }}>{row.序号}</td>
-                              <td style={{ padding: '5px 10px', fontWeight: 600 }}>{row.零件}</td>
-                              <td style={{ padding: '5px 10px', fontFamily: "'DM Mono',monospace" }}>{row.材质}</td>
-                              <td style={{ padding: '5px 10px', textAlign: 'center', fontFamily: "'DM Mono',monospace" }}>{row.数量 ?? 1}</td>
-                              <td style={{ padding: '5px 10px' }}>
-                                <Tag color={row.来源?.includes('牌1') ? C.blue : row.来源?.includes('牌2') ? C.amber : C.textLight}>{row.来源}</Tag>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </Card>
-        )
-      })}
+      {/* 底部导航 */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        <Btn variant="ghost" disabled={lineIdx === 0} onClick={() => goLine(lineIdx - 1)} style={{ flex: 1, justifyContent: 'center' }}>← 上一条明细</Btn>
+        <Btn variant="ghost" onClick={() => setPage({ name: 'quoteDetail', data: quote })} style={{ flex: 1, justifyContent: 'center' }}>返回报价单</Btn>
+        <Btn variant="ghost" disabled={lineIdx === total - 1} onClick={() => goLine(lineIdx + 1)} style={{ flex: 1, justifyContent: 'center' }}>下一条明细 →</Btn>
+      </div>
     </div>
   )
 }
@@ -4494,6 +4548,12 @@ export function ValveQuoteApp() {
     load()
   }, [auth])
 
+  // 报价单编辑持久化（详情/明细行就地编辑后写回）
+  const persistQuote = useCallback((q: Quote) => {
+    fetch(`/api/quotes/${q.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: q }) })
+      .catch(() => { /* 保存失败不阻塞编辑 */ })
+  }, [])
+
   // paramLib 手动添加值持久化到 localStorage
   useEffect(() => {
     if (!loaded) return
@@ -4513,7 +4573,15 @@ export function ValveQuoteApp() {
       case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setPage={setPage} 业务员={业务员} />
       case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} tenantId={auth.tenant_id} />
       case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
-      case 'quoteDetail': return <PageQuoteDetail quote={page.data} goBack={() => setPage({ name: 'quotes' })} drawings={drawings} />
+      case 'quoteDetail': {
+        const q = quotes.find(x => x.id === page.data.id) ?? page.data
+        return <PageQuoteDetail quote={q} setQuotes={setQuotes} persist={persistQuote} goBack={() => setPage({ name: 'quotes' })} setPage={setPage} />
+      }
+      case 'quoteLine': {
+        const q = quotes.find(x => x.id === page.data.quoteId)
+        if (!q || !q.items[page.data.lineIdx]) return <Card title="明细不存在"><Btn onClick={() => setPage({ name: 'quotes' })}>返回报价单</Btn></Card>
+        return <PageQuoteLineDetail quote={q} lineIdx={page.data.lineIdx} setQuotes={setQuotes} persist={persistQuote} setPage={setPage} />
+      }
       case 'quoteItems': return <PageQuoteItems quotes={quotes} drawings={drawings} setPage={setPage} />
       case 'params': return <PageParams params={params} setPage={setPage} />
       case 'productDetail': return <PageProductDetail product={page.data} goBack={() => setPage({ name: 'params' })} />
@@ -4621,7 +4689,7 @@ export function ValveQuoteApp() {
       <div className="vq-scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
         {(() => {
           // 详情页自带标题，不显示外层 h1
-          const noHeader = ['quoteDetail', 'productDetail', 'dashboard'].includes(page.name)
+          const noHeader = ['quoteDetail', 'quoteLine', 'productDetail', 'dashboard'].includes(page.name)
           const label = NAV.find(n => n.id === page.name)?.label ?? ''
           return !noHeader && label ? (
             <div style={{ marginBottom: 14 }}>
