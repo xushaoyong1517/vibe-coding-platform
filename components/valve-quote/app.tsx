@@ -1423,6 +1423,24 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
     (item.待确认 ?? []).some(c => c === field || c === label || c.includes(label) || label.includes(c))
   const inferTotal = extracted ? extracted.reduce((n, it) => n + (it.待确认?.length ?? 0), 0) : 0
 
+  // ── 就地编辑：直接改参数字段（编辑即确认该字段）+ 阀门组增删复制 ──
+  const NUMERIC_FIELDS = new Set(['DN', '压力', '数量'])
+  const updateField = (idx: number, field: keyof QuoteItem, raw: string) =>
+    setExtracted(prev => prev ? prev.map((it, i) => i !== idx ? it : ({
+      ...it,
+      [field]: NUMERIC_FIELDS.has(field as string) ? (Number(raw) || 0) : raw,
+      待确认: (it.待确认 ?? []).filter(f => f !== field),
+    })) : prev)
+  const dupItem = (idx: number) =>
+    setExtracted(prev => { if (!prev) return prev; const n = [...prev]; n.splice(idx + 1, 0, JSON.parse(JSON.stringify(prev[idx]))); return n })
+  const delItem = (idx: number) =>
+    setExtracted(prev => (!prev || prev.length <= 1) ? prev : prev.filter((_, i) => i !== idx))
+  const addItem = () =>
+    setExtracted(prev => {
+      const blank: QuoteItem = { 类型: '闸阀', DN: 0, 压力: 0, 数量: 1, 驱动: '', 连接: '', 主体: '', 阀瓣阀闸: '', 阀座: '', 阀杆轴: '', 螺柱: '', 中腔填料: '', 件号: '', 设计标准: 'API 600', 待确认: ['DN', '压力', '主体', '件号'] }
+      return prev ? [...prev, blank] : [blank]
+    })
+
   const STEPS = ['输入客户需求', '确认参数', '生成 BOM']
 
   return (
@@ -1516,16 +1534,8 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
             />
           )}
 
-          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 12, color: C.textDim }}>
-              { inputMode === 'text'  && '自然语言 · 阀门编号 · 五环编码 · 工程院格式' }
-              { inputMode === 'excel' && 'AI 解析表格中的阀门规格行' }
-              { inputMode === 'pdf'   && 'AI 提取 PDF 中的设备材料规格表' }
-              { inputMode === 'image' && 'AI 视觉识别图片中的阀门参数' }
-            </span>
-            <Btn onClick={handleExtract} disabled={loading}>
-              {loading ? 'AI 处理中...' : '提取参数 →'}
-            </Btn>
+          <div style={{ marginTop: 12, fontSize: 12, color: C.textLight }}>
+            识别格式：自然语言 · 阀门编号 · 五环编码 · 工程院格式
           </div>
           {progress && (
             <div style={{ marginTop: 12 }}>
@@ -1557,8 +1567,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
           )}
           {extracted.map((item, idx) => {
             const match = findMatch(item)
-            const isEditing = editingIdx === idx
-            const ev = editValues!
 
             // 3行3列 + 件号（API标准时显示）
             const isAPI = !item.设计标准 || item.设计标准.includes('API')
@@ -1568,7 +1576,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
               ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'], ['填料', '中腔填料'],
               ...(isAPI ? [['件号 (API)', '件号'] as [string, keyof QuoteItem]] : []),
             ]
-            const NUMERIC_FIELDS = ['DN', '压力', '数量']
 
             const issues = validateItem(item)
             const issueMap = Object.fromEntries(issues.map(i => [i.field, i])) as Record<string, ValidationIssue>
@@ -1576,7 +1583,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
             const warnCount = issues.filter(i => i.severity === 'warning').length
 
             return (
-              <div key={idx} style={{ padding: 12, marginBottom: 10, background: isEditing ? '#fff8f4' : '#fafaf7', borderRadius: 6, border: `1px solid ${errCount > 0 ? C.accent + '80' : isEditing ? C.accent + '60' : C.borderLight}` }}>
+              <div key={idx} style={{ padding: 12, marginBottom: 10, background: '#fafaf7', borderRadius: 6, border: `1px solid ${errCount > 0 ? C.accent + '80' : C.borderLight}` }}>
                 {/* 行头 */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
@@ -1587,61 +1594,37 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                   {match ? <Tag color={C.green}>✓ 历史匹配 ×{match.次数}次</Tag> : <Tag color={C.amber}>首次配置</Tag>}
                   {errCount  > 0 && <Tag color={C.accent}>{errCount} 个错误</Tag>}
                   {warnCount > 0 && <Tag color={C.amber}>{warnCount} 个警告</Tag>}
-                  {!isEditing && (
-                    <Btn variant="ghost" small onClick={() => startEdit(idx)}>修改</Btn>
-                  )}
+                  <Btn variant="ghost" small onClick={() => dupItem(idx)}>复制</Btn>
+                  <Btn variant="ghost" small onClick={() => delItem(idx)} disabled={extracted.length <= 1}>删除</Btn>
                 </div>
 
-                {isEditing ? (
-                  /* ── 编辑模式：Combobox 网格，有问题的字段标签加图标 ── */
-                  <div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 10 }}>
-                      {FIELDS.map(([label, field]) => {
-                        const fi = issueMap[field]
-                        const prefix = fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''
-                        return (
-                          <Combobox
-                            key={field}
-                            label={`${prefix}${label}`}
-                            value={String(ev[field] ?? '')}
-                            onChange={v => setEditValues(prev => prev ? {
-                              ...prev,
-                              [field]: NUMERIC_FIELDS.includes(field) ? Number(v) : v
-                            } : prev)}
-                            options={getFieldOptions(field)}
-                          />
-                        )
-                      })}
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-                      <Btn variant="ghost" small onClick={cancelEdit}>取消</Btn>
-                      <Btn small onClick={() => saveEdit(idx)}>保存</Btn>
-                    </div>
-                  </div>
-                ) : (
-                  /* ── 查看模式：字段格高亮错误/警告 ── */
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
-                    {FIELDS.map(([label, field]) => {
-                      const fi = issueMap[field]
-                      const infer = !fi && isInfer(item, label, field as string)
-                      const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : infer ? '#fffaf0' : '#fff'
-                      const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : infer ? '#f0dcae' : C.borderLight
-                      const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : infer ? C.amber : C.textLight
-                      return (
-                        <div key={field} style={{ background: bg, padding: '4px 8px', borderRadius: 4, border: `1px solid ${border}` }}>
-                          <div style={{ fontSize: 10, color: lc, display: 'flex', alignItems: 'center', gap: 4 }}>
-                            <span>{fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''}{label}</span>
-                            {infer && (
-                              <span onClick={() => confirmField(idx, field as string)} title="点击确认无误"
-                                style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.amber, padding: '1px 5px', borderRadius: 3, cursor: 'pointer' }}>推断 ✓</span>
-                            )}
-                          </div>
-                          <div style={{ fontWeight: 600, background: infer ? '#fdeecb' : 'transparent', borderRadius: 3, padding: infer ? '0 3px' : 0, marginTop: 1 }}>{String(item[field] || '—')}</div>
+                {/* ── 就地编辑：每格直接可改，推断字段金色高亮 ── */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, fontSize: 12 }}>
+                  {FIELDS.map(([label, field]) => {
+                    const fi = issueMap[field]
+                    const infer = !fi && isInfer(item, label, field as string)
+                    const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : infer ? '#fffaf0' : '#fff'
+                    const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : infer ? '#f0dcae' : C.borderLight
+                    const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : infer ? C.amber : C.textLight
+                    return (
+                      <div key={field} style={{ background: bg, padding: '6px 8px', borderRadius: 4, border: `1px solid ${border}` }}>
+                        <div style={{ fontSize: 10, color: lc, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                          <span>{fi ? (fi.severity === 'error' ? '✕ ' : '⚠ ') : ''}{label}</span>
+                          {infer && (
+                            <span onClick={() => confirmField(idx, field as string)} title="点击确认无误"
+                              style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.amber, padding: '1px 5px', borderRadius: 3, cursor: 'pointer' }}>推断 ✓</span>
+                          )}
                         </div>
-                      )
-                    })}
-                  </div>
-                )}
+                        <input
+                          value={String(item[field] ?? '')}
+                          onChange={e => updateField(idx, field, e.target.value)}
+                          placeholder="—"
+                          style={{ width: '100%', border: 'none', outline: 'none', background: infer ? '#fdeecb' : 'transparent', borderRadius: 3, fontSize: 14, fontWeight: 600, color: C.text, fontFamily: 'inherit', padding: '1px 3px' }}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
 
                 {/* 问题列表 */}
                 {issues.length > 0 && (
@@ -1661,20 +1644,10 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
               </div>
             )
           })}
-          {(() => {
-            const hasErrors = extracted.some(item => validateItem(item).some(i => i.severity === 'error'))
-            const totalErrors = extracted.reduce((n, item) => n + validateItem(item).filter(i => i.severity === 'error').length, 0)
-            return (
-              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginTop: 10 }}>
-                {hasErrors && (
-                  <span style={{ fontSize: 12, color: C.accent }}>请修正 {totalErrors} 个错误后再生成 BOM</span>
-                )}
-                <Btn onClick={handleGenBOM} disabled={loading || editingIdx !== null || hasErrors}>
-                  {loading ? '生成BOM中...' : '确认参数，生成BOM →'}
-                </Btn>
-              </div>
-            )
-          })()}
+          <button onClick={addItem}
+            style={{ width: '100%', border: `1.5px dashed ${C.border}`, background: '#fafbfc', borderRadius: 8, padding: 13, color: C.textDim, fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', marginTop: 2 }}>
+            ＋ 手动新增阀门组
+          </button>
           {progress && (
             <div style={{ marginTop: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textDim, marginBottom: 5 }}>
@@ -1798,13 +1771,41 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                 </div>
               ))}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <Btn variant="ghost" onClick={() => { setStep(1); setBomResults(null) }}>← 修改参数</Btn>
-              <Btn onClick={handleSave}>保存为报价单</Btn>
-            </div>
           </Card>
         </div>
       )}
+
+      {/* ── 底部操作栏：上一步 / 下一步 + 主操作 ── */}
+      {(() => {
+        const hasErrors = !!extracted && extracted.some(it => validateItem(it).some(i => i.severity === 'error'))
+        const total = extracted ? extracted.reduce((a, it) => a + (it.数量 || 1), 0) : 0
+        const canNext = (step === 0 && !!extracted) || (step === 1 && !!bomResults)
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 4 }}>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <Btn variant="ghost" disabled={step === 0} onClick={() => setStep(Math.max(0, step - 1))}>← 上一步</Btn>
+              <Btn variant="ghost" disabled={!canNext} onClick={() => canNext && setStep(step + 1)}>下一步 →</Btn>
+            </div>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              {step === 0 && <Btn onClick={handleExtract} disabled={loading}>{loading ? 'AI 处理中…' : '⚡ 提取参数'}</Btn>}
+              {step === 1 && (
+                <>
+                  <span style={{ fontSize: 13, color: hasErrors ? C.accent : C.textLight }}>
+                    {hasErrors ? '请先修正错误' : `${extracted!.length} 种阀门 · 共 ${total} 只`}
+                  </span>
+                  <Btn onClick={handleGenBOM} disabled={loading || hasErrors}>{loading ? '生成中…' : '确认参数，生成 BOM →'}</Btn>
+                </>
+              )}
+              {step === 2 && (
+                <>
+                  <span style={{ fontSize: 13, color: C.textLight }}>{bomResults!.length} 张 BOM · 共 {total} 只</span>
+                  <Btn onClick={handleSave}>保存为报价单 →</Btn>
+                </>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* 来源依据 popover */}
       {srcPop && (() => {
