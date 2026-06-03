@@ -502,7 +502,6 @@ type PageState =
   | { name: 'quoteItems' }
   | { name: 'params' }
   | { name: 'productDetail'; data: ValveProduct }
-  | { name: 'paramLib' }
   | { name: 'valveCodeRef' }
   | { name: 'valveParts' }
   | { name: 'bomList' }
@@ -647,36 +646,7 @@ function decodeProduct([id,U1,U2,U3,U4,U5,U6,U7,U8,U9,U10,U11,U12,U13,U14,U15,U1
 
 // ── 郑浩林6.17高压闸阀询价 · 28个产品（按CSV原始数据）────
 // 列: [item_id, U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U14, U15, U16, U17, U18, U19, full_code]
-const SEED_PARAMS: Param[] = ([
-  ['103030380', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   15, 'S', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-15-S0A0203A00A00-00'],
-  ['103031101', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '31',   'Z61W-800LbP-15-B0A0203A00A00-31'],
-  ['103031681', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-15-B0A0203A00A00-00'],
-  ['103031363', 'D', 'Z', '', '6', '1', 'W',  '800Lb',  'C2',  15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '0631', 'DZ61W-800LbC2-15-B0A0203A00A00-0631'],
-  ['103030299', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   25, 'S', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-25-S0A0000A00A00-00'],
-  ['103030277', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   20, 'S', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-20-S0A0000A00A00-00'],
-  ['103030375', '',  'Z', '', '6', '1', 'H',  '800Lb',  'C',   15, 'S', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61H-800LbC-15-S0A0000A00A00-00'],
-  ['103031227', 'K', 'Z', '', '6', '1', 'W',  '800Lb',  'L1',  15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'KZ61W-800LbL1-15-B0A0000A00A00-00'],
-  ['103030927', '',  'Z', '', '4', '0', 'Y2', '600Lb',  'C',  100, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z40Y2-600LbC-100-R0A0000A00A00-00'],
-  ['103031252', '',  'Z', '', '4', '0', 'Y2', '600Lb',  'C',   80, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z40Y2-600LbC-80-R0A0000A00A00-00'],
-  ['103031697', '',  'Z', '', '6', '0', 'Y2', '600Lb',  'C',   50, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z60Y2-600LbC-50-B0A0000A00A00-00'],
-  ['103030766', '',  'Z', '', '4', '0', 'Y2', '600Lb',  'C',   50, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z40Y2-600LbC-50-R0A0000A00A00-00'],
-  ['103030754', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'C',   25, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbC-25-R0A0000A00A00-00'],
-  ['103030930', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'C',   20, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbC-20-R0A0000A00A00-00'],
-  ['103031057', '',  'Z', '', '6', '1', 'Y2', '800Lb',  'C',   15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61Y2-800LbC-15-B0A0000A00A00-00'],
-  ['103030774', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'C',   15, 'R', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbC-15-R0A0000A00A00-00'],
-  ['103031696', '',  'Z', '', '6', '1', 'Y2', '800Lb',  'L',   15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61Y2-800LbL-15-B0A0000A00A00-00'],
-  ['103031098', 'K', 'Z', '', '6', '1', 'Y2', '800Lb',  'L1',  15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'KZ61Y2-800LbL1-15-B0A0000A00A00-00'],
-  ['103031376', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'P',   25, 'R', '0', 'A', '03', '05', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbP-25-R0A0305A00A00-00'],
-  ['103030482', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   25, 'S', '0', 'A', '04', '04', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-25-S0A0404A00A00-00'],
-  ['103031229', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   20, 'S', '0', 'A', '04', '04', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-20-S0A0404A00A00-00'],
-  ['103030387', '',  'Z', '', '6', '1', 'W',  '800Lb',  'P',   15, 'S', '0', 'A', '04', '04', 'A', '00', 'A', '00', '00',   'Z61W-800LbP-15-S0A0404A00A00-00'],
-  ['103031323', '',  'Z', '', '4', '1', 'Y2', '600Lb',  'P',   20, 'R', '0', 'A', '03', '05', 'A', '00', 'A', '00', '00',   'Z41Y2-600LbP-20-R0A0305A00A00-00'],
-  ['103030390', '',  'Z', '', '6', '1', 'Y2', '800Lb',  'R',   15, 'B', '0', 'A', '00', '00', 'A', '00', 'A', '00', '00',   'Z61Y2-800LbR-15-B0A0000A00A00-00'],
-  ['103031700', '',  'Z', '', '6', '0', 'Y2', '900Lb',  'V3',  80, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z60Y2-900LbV3-80-B0A0203A00A00-00'],
-  ['103031689', '',  'Z', '', '4', '1', 'Y2', '900Lb',  'V3',  20, 'J', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z41Y2-900LbV3-20-J0A0203A00A00-00'],
-  ['103031688', '',  'Z', '', '4', '1', 'Y2', '1500Lb', 'V3',  20, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z41Y2-1500LbV3-20-B0A0203A00A00-00'],
-  ['103031687', '',  'Z', '', '4', '1', 'Y2', '1500Lb', 'V3',  15, 'B', '0', 'A', '02', '03', 'A', '00', 'A', '00', '00',   'Z41Y2-1500LbV3-15-B0A0203A00A00-00'],
-] as ProductRow[]).map(decodeProduct)
+const SEED_PARAMS: Param[] = []  // 参数库种子已移除（改用落库的阀门参数库）
 
 const SEED_QUOTES: Quote[] = [
   {
@@ -1031,6 +1001,20 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   const [bomEditRows, setBomEditRows] = useState<BOMRow[] | null>(null)
   const [saveForm, setSaveForm] = useState({ 客户: '', 联系人: '', 交期: '' })
   const [correlationId, setCorrelationId] = useState<string>('')  // 一次报价会话，串起事件闭环
+  // 归一化+历史匹配结果（按 item 下标）
+  const [matchByIdx, setMatchByIdx] = useState<Record<number, { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[] }>>({})
+  const enrichItems = async (items: QuoteItem[]) => {
+    try {
+      const res = await fetch('/api/params/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) })
+      const d = await res.json()
+      if (!d.ok) return
+      const m: Record<number, { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[] }> = {}
+      d.items.forEach((it: { _match: { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string> }; _unmatched: string[] }, i: number) => {
+        m[i] = { ...it._match, unmatched: it._unmatched ?? [] }
+      })
+      setMatchByIdx(m)
+    } catch { /* enrich 失败不阻塞主流程 */ }
+  }
   useEffect(() => {
     setSaveForm(prev => prev.交期 ? prev : { ...prev, 交期: new Date().toISOString().slice(0, 10) })
   }, [])
@@ -1182,7 +1166,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       clearInterval(fakeTimer)
       setProgress({ pct: 100, label: '完成！' })
       const parsed = parseJSON(raw)
-      if (parsed?.items) { setExtracted(parsed.items); setStep(1) }
+      if (parsed?.items) { setExtracted(parsed.items); setMatchByIdx({}); enrichItems(parsed.items); setStep(1) }
       else setError('AI 返回格式异常，请重试或换种描述方式')
     } catch (e) {
       clearInterval(fakeTimer)
@@ -1190,38 +1174,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
     }
     setLoading(false)
     setTimeout(() => setProgress(null), 600)
-  }
-
-  // 两级历史BOM查询
-  const findHistoricalBOM = (item: QuoteItem) => {
-    const exactKey = (q: QuoteItem) => `${q.类型}|${q.DN}|${q.压力}|${q.主体}|${q.件号}`
-    const fuzzyKey = (q: QuoteItem) => `${q.类型}|${q.主体}|${q.件号}`
-
-    type HitItem = { bom: BOMRow[]; 牌1: string; 牌2: string; qi: QuoteItem }
-    const exactHits: HitItem[] = []
-    const fuzzyHits: HitItem[] = []
-
-    for (const q of quotes) {
-      if (!q.bomData) continue
-      q.items.forEach((qi, idx) => {
-        if (!q.bomData![idx]?.bom?.length) return
-        const entry = { bom: q.bomData![idx].bom, 牌1: q.bomData![idx].牌1, 牌2: q.bomData![idx].牌2, qi }
-        if (exactKey(qi) === exactKey(item)) exactHits.push(entry)
-        else if (fuzzyKey(qi) === fuzzyKey(item)) fuzzyHits.push(entry)
-      })
-    }
-
-    if (exactHits.length > 0) {
-      return { ...exactHits[0], count: exactHits.length, level: 'exact' as const, diffFields: [] }
-    }
-    if (fuzzyHits.length > 0) {
-      const src = fuzzyHits[0].qi
-      const diff: string[] = []
-      if (src.DN !== item.DN) diff.push(`DN${src.DN}→DN${item.DN}`)
-      if (src.压力 !== item.压力) diff.push(`${src.压力}→${item.压力}LB`)
-      return { ...fuzzyHits[0], count: fuzzyHits.length, level: 'fuzzy' as const, diffFields: diff }
-    }
-    return null
   }
 
   const handleGenBOM = async () => {
@@ -1237,17 +1189,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
         const item = extracted[i]
         const label = `第 ${i + 1}/${total} 条：${item.类型} DN${item.DN}`
         setProgress({ pct: Math.round((i / total) * 90), label })
-        // Step 1：精确匹配 / 模糊匹配
-        const hist = findHistoricalBOM(item)
-        if (hist) {
-          results.push({
-            item, bom: hist.bom, 牌1: hist.牌1, 牌2: hist.牌2,
-            来源: hist.level, 历史次数: hist.count, 差异字段: hist.diffFields,
-          })
-          setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}（历史匹配）` })
-          continue
-        }
-        // Step 2：匹配产品模板骨架
+        // Step 1：匹配产品模板骨架（历史参数匹配已停用）
         const tpl = matchDrawing(item, drawings)
         const hasTpl = !!tpl?.bom_template?.length
 
@@ -1398,9 +1340,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
 
     setPage({ name: 'quoteDetail', data: newQuote })
   }
-
-  const findMatch = (item: QuoteItem) =>
-    params.find(p => p.类型 === item.类型 && p.DN === item.DN && p.压力 === item.压力 && p.主体 === item.主体 && p.阀瓣阀闸 === item.阀瓣阀闸)
 
   // ── BOM 来源分类（牌1 蓝 / 牌2 金 / 通用 灰）+ popover 说明 ──
   const classifySrc = (src: string): { kind: 'p1' | 'p2' | 'gen'; label: string; color: string } => {
@@ -1567,7 +1506,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
             </div>
           )}
           {extracted.map((item, idx) => {
-            const match = findMatch(item)
 
             // 3行3列 + 件号（API标准时显示）
             const isAPI = !item.设计标准 || item.设计标准.includes('API')
@@ -1592,7 +1530,18 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                   <span style={{ color: C.textDim }}>× {item.数量 || 1}</span>
                   <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.blue }}>{item.工厂编号}</span>
                   <div style={{ flex: 1 }} />
-                  {match ? <Tag color={C.green}>✓ 历史匹配 ×{match.次数}次</Tag> : <Tag color={C.amber}>首次配置</Tag>}
+                  {(() => {
+                    const m = matchByIdx[idx]
+                    if (!m) return null
+                    if (m.level === 'exact') return <Tag color={C.green}>✓ 历史精确 ×{m.count}次</Tag>
+                    if (m.level === 'similar') return <Tag color={C.blue}>≈ 历史相似 ×{m.count}次</Tag>
+                    if (m.rows > 0) return <Tag color={C.amber}>新配置 · 参考历史 {m.rows} 条</Tag>
+                    return <Tag color={C.textLight}>新配置</Tag>
+                  })()}
+                  {(() => {
+                    const m = matchByIdx[idx]
+                    return m && m.unmatched.length > 0 ? <Tag color={C.amber}>{m.unmatched.length} 项未识别</Tag> : null
+                  })()}
                   {errCount  > 0 && <Tag color={C.accent}>{errCount} 个错误</Tag>}
                   {warnCount > 0 && <Tag color={C.amber}>{warnCount} 个警告</Tag>}
                   <Btn variant="ghost" small onClick={() => dupItem(idx)}>复制</Btn>
@@ -3297,88 +3246,6 @@ function PageBomList() {
 }
 
 // ════════════════════════════════════════════════════
-// PAGE: 参数库（Tab 页，9大参数管理）
-// ════════════════════════════════════════════════════
-
-function PageParamLib({ paramLib, setParamLib }: {
-  paramLib: ParamLibrary
-  setParamLib: React.Dispatch<React.SetStateAction<ParamLibrary>>
-}) {
-  const [activeKey, setActiveKey] = useState<keyof ParamLibrary>('类型')
-  const [newVal, setNewVal] = useState('')
-
-  const current = [...new Set(paramLib[activeKey] ?? [])]
-
-  const addVal = () => {
-    const v = newVal.trim()
-    if (!v || current.includes(v)) return
-    setParamLib(prev => ({ ...prev, [activeKey]: [...prev[activeKey], v].sort() }))
-    setNewVal('')
-  }
-
-  const removeVal = (v: string) =>
-    setParamLib(prev => ({ ...prev, [activeKey]: prev[activeKey].filter(x => x !== v) }))
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-      {/* Tab 栏 */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: `2px solid ${C.border}`, marginBottom: 14, overflowX: 'auto' }}>
-        {PARAM_LIB_TABS.map(tab => (
-          <div
-            key={tab.key}
-            onClick={() => { setActiveKey(tab.key); setNewVal('') }}
-            style={{
-              padding: '9px 16px', cursor: 'pointer', whiteSpace: 'nowrap',
-              fontSize: 13, fontWeight: activeKey === tab.key ? 700 : 400,
-              color: activeKey === tab.key ? C.accent : C.textDim,
-              borderBottom: activeKey === tab.key ? `2px solid ${C.accent}` : '2px solid transparent',
-              marginBottom: -2,
-            }}
-          >
-            {tab.label}
-            <span style={{ marginLeft: 5, fontSize: 11, color: C.textLight, fontWeight: 400 }}>
-              {paramLib[tab.key]?.length ?? 0}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* 当前 Tab 内容 */}
-      <Card title={`${PARAM_LIB_TABS.find(t => t.key === activeKey)?.label} 参数值`}>
-        {/* 值列表 */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, minHeight: 40, marginBottom: 16 }}>
-          {current.length === 0 && (
-            <span style={{ fontSize: 12, color: C.textLight }}>暂无数据</span>
-          )}
-          {current.map((v, vi) => (
-            <div key={`${v}-${vi}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 10px', background: C.blue + '12', borderRadius: 5, border: `1px solid ${C.blue}28` }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: C.blue, fontFamily: "'DM Mono',monospace" }}>{v}</span>
-              <button
-                onClick={() => removeVal(v)}
-                style={{ border: 'none', background: 'none', cursor: 'pointer', color: C.textLight, fontSize: 15, padding: '0 2px', lineHeight: 1, display: 'flex', alignItems: 'center' }}
-                title="删除"
-              >×</button>
-            </div>
-          ))}
-        </div>
-
-        {/* 新增输入 */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            value={newVal}
-            onChange={e => setNewVal(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && addVal()}
-            placeholder={`输入新的${PARAM_LIB_TABS.find(t => t.key === activeKey)?.label}值，回车添加…`}
-            style={{ flex: 1, padding: '7px 10px', border: `1px solid ${C.border}`, borderRadius: 4, fontSize: 13, outline: 'none' }}
-          />
-          <Btn onClick={addVal} disabled={!newVal.trim()}>+ 添加</Btn>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-// ════════════════════════════════════════════════════
 // PAGE: 历史参数组
 // ════════════════════════════════════════════════════
 
@@ -4413,13 +4280,13 @@ const NAV = [
   { id: 'quotes',      icon: '☰', label: '报价单',     group: '核心流程' },
   { id: 'quoteItems',  icon: '≡', label: '报价明细', group: '核心流程' },
   { id: 'drawings',    icon: '📐', label: '小样图库',   group: '数据管理' },
-  { id: 'paramLib',    icon: '◈', label: '参数库',     group: '数据管理' },
+  // { id: 'paramLib',    icon: '◈', label: '参数库',     group: '数据管理' },  // 暂时隐藏
   { id: 'valveCodeRef', icon: '⊟', label: '阀门参数库', group: '数据管理' },
   { id: 'params',      icon: '⬡', label: '阀门产品库', group: '数据管理' },
   { id: 'rules',       icon: '☶', label: '规则库',     group: '数据管理' },
-  { id: 'learning',    icon: '✦', label: '学习看板',   group: '数据管理' },
-  { id: 'valveParts',  icon: '⊞', label: '零件库',     group: '数据管理' },
-  { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },
+  // { id: 'learning',    icon: '✦', label: '学习看板',   group: '数据管理' },  // 暂时隐藏
+  // { id: 'valveParts',  icon: '⊞', label: '零件库',     group: '数据管理' },  // 暂时隐藏
+  // { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },  // 暂时隐藏
   { id: 'dataInit',    icon: '⊕', label: '初始化',     group: '数据管理' },
 ]
 
@@ -4588,7 +4455,6 @@ export function ValveQuoteApp() {
       case 'drawings':   return <PageDrawings drawings={drawings} setDrawings={setDrawings} />
       case 'valveParts': return <PageValveParts />
       case 'bomList': return <PageBomList />
-      case 'paramLib': return <PageParamLib paramLib={paramLib} setParamLib={setParamLib} />
       case 'valveCodeRef': return <PageValveCodeRef />
       case 'rules': return <PageRules />
       case 'learning': return <PageLearning />

@@ -1,0 +1,31 @@
+import { NextResponse } from 'next/server'
+import { supabase } from '@/lib/supabase'
+import { getTenantId } from '@/lib/auth'
+import { loadParamUnits } from '@/lib/load-param-units'
+import { normalizeItem } from '@/lib/normalize-params'
+import { matchProduct, type ProductRow } from '@/lib/match-product'
+
+// POST /api/params/enrich  { items: [...提取后的参数] }
+// ② 归一化(查参数库) + ③ 匹配产品库(置信度/历史补缺)。租户由会话决定。
+// 返回每条 item 附带 _norm / _unmatched / _match。
+export async function POST(req: Request) {
+  const tenantId = getTenantId(req)
+  let body: { items?: Record<string, unknown>[] }
+  try { body = await req.json() } catch { return NextResponse.json({ error: '请求体非法' }, { status: 400 }) }
+  const items = Array.isArray(body.items) ? body.items : []
+
+  const [units, prodRes] = await Promise.all([
+    loadParamUnits(tenantId),
+    supabase.from('valve_products').select('U2,U5,U6,U7,U8,U9,下单次数,full_code').eq('tenant_id', tenantId),
+  ])
+  if (prodRes.error) return NextResponse.json({ error: prodRes.error.message }, { status: 500 })
+  const products = (prodRes.data ?? []) as unknown as ProductRow[]
+
+  const enriched = items.map(item => {
+    const norm = normalizeItem(item, units)
+    const match = matchProduct(norm.codes, products)
+    return { ...item, _norm: norm.codes, _normCn: norm.cn, _unmatched: norm.unmatched, _status: norm.status, _match: match }
+  })
+
+  return NextResponse.json({ ok: true, items: enriched, productCount: products.length })
+}
