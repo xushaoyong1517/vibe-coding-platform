@@ -21,10 +21,17 @@ export async function POST(req: Request) {
   if (prodRes.error) return NextResponse.json({ error: prodRes.error.message }, { status: 500 })
   const products = (prodRes.data ?? []) as unknown as ProductRow[]
 
+  // 码 → 中文名（反查字典，用于"历史常见"提示）
+  const codeToCn = (unit: string, code: string): string =>
+    units[unit]?.entries.find(e => e.code === code)?.cn ?? code
+
   const enriched = items.map(item => {
     const norm = normalizeItem(item, units)
     const match = matchProduct(norm.codes, products)
-    return { ...item, _norm: norm.codes, _normCn: norm.cn, _unmatched: norm.unmatched, _status: norm.status, _match: match }
+    const prefillHint = Object.entries(match.prefill)
+      .map(([unit, code]) => ({ unit, unitName: units[unit]?.name_cn ?? unit, code, cn: codeToCn(unit, code) }))
+      .filter(h => h.cn !== h.code)  // 反查不到中文名（如产品库旧码 U6=Y）→ 不展示生码
+    return { ...item, _norm: norm.codes, _normCn: norm.cn, _unmatched: norm.unmatched, _status: norm.status, _match: match, _prefillHint: prefillHint }
   })
 
   return NextResponse.json({ ok: true, items: enriched, productCount: products.length })

@@ -1002,17 +1002,26 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   const [saveForm, setSaveForm] = useState({ 客户: '', 联系人: '', 交期: '' })
   const [correlationId, setCorrelationId] = useState<string>('')  // 一次报价会话，串起事件闭环
   // 归一化+历史匹配结果（按 item 下标）
-  const [matchByIdx, setMatchByIdx] = useState<Record<number, { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[] }>>({})
+  type PrefillHint = { unit: string; unitName: string; code: string; cn: string }
+  type MatchInfo = { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[]; hint: PrefillHint[] }
+  const [matchByIdx, setMatchByIdx] = useState<Record<number, MatchInfo>>({})
   const enrichItems = async (items: QuoteItem[]) => {
     try {
       const res = await fetch('/api/params/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) })
       const d = await res.json()
       if (!d.ok) return
-      const m: Record<number, { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[] }> = {}
-      d.items.forEach((it: { _match: { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string> }; _unmatched: string[] }, i: number) => {
-        m[i] = { ...it._match, unmatched: it._unmatched ?? [] }
+      const m: Record<number, MatchInfo> = {}
+      d.items.forEach((it: { _match: Omit<MatchInfo, 'unmatched' | 'hint'>; _unmatched: string[]; _prefillHint: PrefillHint[] }, i: number) => {
+        m[i] = { ...it._match, unmatched: it._unmatched ?? [], hint: it._prefillHint ?? [] }
       })
       setMatchByIdx(m)
+      // 未识别字段并入「待确认」→ 触发金色高亮 + 推断✓（复用置信度UI）
+      setExtracted(prev => prev ? prev.map((it, i) => {
+        const un = m[i]?.unmatched ?? []
+        if (!un.length) return it
+        const merged = [...new Set([...(it.待确认 ?? []), ...un])]
+        return { ...it, 待确认: merged }
+      }) : prev)
     } catch { /* enrich 失败不阻塞主流程 */ }
   }
   useEffect(() => {
@@ -1575,6 +1584,23 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                     )
                   })}
                 </div>
+
+                {/* 历史常见（来自产品库补缺，仅提示不强写） */}
+                {(() => {
+                  const m = matchByIdx[idx]
+                  if (!m || !m.hint.length) return null
+                  return (
+                    <div style={{ marginTop: 8, fontSize: 12, color: C.textDim, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ color: C.blue, fontWeight: 600 }}>历史常见</span>
+                      {m.hint.map(h => (
+                        <span key={h.unit} style={{ background: C.blue + '14', color: C.blue, borderRadius: 5, padding: '2px 8px' }}>
+                          {h.unitName.replace(/材料|材质/, '')}：{h.cn}
+                        </span>
+                      ))}
+                      {m.topCode && <span style={{ color: C.textLight }}>· 参考 <span style={{ fontFamily: "'DM Mono',monospace" }}>{m.topCode}</span></span>}
+                    </div>
+                  )
+                })()}
 
                 {/* 问题列表 */}
                 {issues.length > 0 && (
