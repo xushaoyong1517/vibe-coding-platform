@@ -1832,6 +1832,7 @@ function PageDrawings({ drawings, setDrawings }: {
         bom_template: Array.isArray(data.bom_template) ? data.bom_template : [],
         rules:        data.rules ?? '',
         codes:        data.codes && typeof data.codes === 'object' ? data.codes : undefined,
+        image_url:    data.image_url ?? null,
       })
       setPendingId(newId)
     } catch {
@@ -3639,10 +3640,11 @@ const SUM_KEY_FIELDS: [string, keyof QuoteItem][] = [
   ['主体', '主体'], ['阀座', '阀座'], ['阀瓣/闸', '阀瓣阀闸'], ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'],
 ]
 
-function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
+function PageQuoteDetail({ quote, setQuotes, persist, drawings, goBack, setPage }: {
   quote: Quote
   setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
   persist: (q: Quote) => void
+  drawings: DrawingTemplate[]
   goBack: () => void
   setPage: (p: PageState) => void
 }) {
@@ -3654,8 +3656,17 @@ function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
   const stateOptions = [quote.状态, ...nextStates(quote.状态).filter(s => s !== quote.状态)]
 
   const printBom = async () => {
+    // 给每行附上匹配小样图的底图/图号（打印时重建小样图版式）
+    const payload = {
+      ...quote,
+      bomData: quote.bomData?.map((r, idx) => {
+        const it = quote.items[idx]
+        const d = r.drawing_id ? drawings.find(x => x.id === r.drawing_id) : (it ? matchDrawing(it, drawings) : null)
+        return { ...r, _img: d?.image_url ?? null, _drawingName: d?.name ?? r.drawing_name }
+      }),
+    }
     const res = await fetch(`/api/quotes/${quote.id}/print`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(quote),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     })
     if (!res.ok) { alert((await res.json()).error); return }
     const html = await res.text()
@@ -4511,7 +4522,7 @@ export function ValveQuoteApp() {
       case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
       case 'quoteDetail': {
         const q = quotes.find(x => x.id === page.data.id) ?? page.data
-        return <PageQuoteDetail quote={q} setQuotes={setQuotes} persist={persistQuote} goBack={() => setPage({ name: 'quotes' })} setPage={setPage} />
+        return <PageQuoteDetail quote={q} setQuotes={setQuotes} persist={persistQuote} drawings={drawings} goBack={() => setPage({ name: 'quotes' })} setPage={setPage} />
       }
       case 'quoteLine': {
         const q = quotes.find(x => x.id === page.data.quoteId)

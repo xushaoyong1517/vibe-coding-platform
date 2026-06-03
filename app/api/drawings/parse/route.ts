@@ -200,6 +200,15 @@ export async function POST(req: Request) {
     parsed.pressure as number | undefined, parsed.actuator as string | undefined,
   )
 
-  console.log('[parse] done, method:', usedMethod, 'bom rows:', (parsed.bom_template as unknown[])?.length ?? 0, 'codes:', JSON.stringify(codes))
-  return NextResponse.json({ ...parsed, codes, pdf_url: pdfUrl, _method: usedMethod })
+  // Step 6: 首页缩略图（打印时作版式底图；失败不阻塞）
+  let imageUrl: string | null = null
+  try {
+    const jpeg = await pdfFirstPageToJpeg(bytes, 2.5)
+    const { error: imgErr } = await supabase.storage
+      .from('drawings').upload(`${id}.jpg`, jpeg, { contentType: 'image/jpeg', upsert: true })
+    if (!imgErr) imageUrl = supabase.storage.from('drawings').getPublicUrl(`${id}.jpg`).data.publicUrl
+  } catch (e) { console.error('[parse] thumbnail render failed:', e) }
+
+  console.log('[parse] done, method:', usedMethod, 'bom rows:', (parsed.bom_template as unknown[])?.length ?? 0, 'codes:', JSON.stringify(codes), 'image:', !!imageUrl)
+  return NextResponse.json({ ...parsed, codes, pdf_url: pdfUrl, image_url: imageUrl, _method: usedMethod })
 }

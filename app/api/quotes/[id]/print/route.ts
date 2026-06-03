@@ -20,12 +20,13 @@ const PART_CODE: Record<string, string> = {
 
 interface BOMRow   { 序号: number; 零件: string; 材质: string; 数量: number }
 interface QuoteItem { 类型: string; DN: number; 压力: number; 数量: number; 驱动: string; 主体: string; 工厂编号?: string }
-interface BOMResult { item: QuoteItem; bom: BOMRow[]; 牌1: string; 牌2: string }
+interface BOMResult { item: QuoteItem; bom: BOMRow[]; 牌1: string; 牌2: string; _img?: string | null; _drawingName?: string }
 interface Quote { id: string; 客户: string; 订单号: string; 日期: string; bomData?: BOMResult[] }
 
 function bomSheet(quote: Quote, result: BOMResult, idx: number): string {
-  const { item, bom, 牌1, 牌2 } = result
+  const { item, bom, 牌1, 牌2, _img, _drawingName } = result
   const docNo = item.工厂编号 || `${quote.订单号}-${String(idx + 1).padStart(2, '0')}`
+  const hasImg = !!_img
 
   const rows = bom.map((r, i) => `<tr>
     <td class="c">${i + 1}</td>
@@ -38,17 +39,25 @@ function bomSheet(quote: Quote, result: BOMResult, idx: number): string {
     <td></td>
   </tr>`).join('')
 
-  const blankCount = Math.max(0, 25 - bom.length)
-  const blankH = blankCount > 0 ? `style="height:${Math.floor(62 / blankCount)}mm"` : ''
+  // 有小样图底图时占用上方空间，明细表少留空行
+  const targetRows = hasImg ? 17 : 25
+  const blankCount = Math.max(0, targetRows - bom.length)
+  const blankH = blankCount > 0 ? `style="height:${Math.floor((hasImg ? 40 : 62) / blankCount)}mm"` : ''
   const blanks = Array.from({ length: blankCount },
     () => `<tr ${blankH}><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`
   ).join('')
+
+  const drawingBlock = hasImg ? `<div class="dw">
+      <img src="${_img}" alt="小样图"/>
+      <div class="dwcap">小样图：${_drawingName ?? item.类型}　图号 ${docNo}</div>
+    </div>` : ''
 
   return `<div class="page">
     <div class="hd">
       <span class="co">越强阀门有限公司</span>
       <span class="dt">明&nbsp;细&nbsp;表</span>
     </div>
+    ${drawingBlock}
     <table class="bt">
       <thead><tr class="th">
         <th style="width:26px">序号</th><th style="width:88px">代号</th>
@@ -109,6 +118,9 @@ body{font-family:"SimSun","宋体","Microsoft YaHei",sans-serif;font-size:11px;b
 .fl{background:#f5f5f5;font-weight:600;width:38px;text-align:center;color:#555}
 .fv{width:76px}.fc{text-align:center;font-size:13px;font-weight:800;letter-spacing:1px}
 .fn{text-align:center;font-size:10.5px;font-weight:700;font-family:monospace}
+.dw{border:.5px solid #777;margin-bottom:3px;display:flex;flex-direction:column;align-items:center;background:#fafafa}
+.dw img{max-width:100%;max-height:62mm;object-fit:contain;display:block}
+.dwcap{font-size:9.5px;color:#555;padding:2px 0;border-top:.5px solid #ccc;width:100%;text-align:center}
 .tag{margin-top:4px;font-size:9.5px;color:#999;text-align:right}
 @media print{
   body{background:#fff;padding:0;gap:0}
