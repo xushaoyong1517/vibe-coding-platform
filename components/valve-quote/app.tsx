@@ -475,9 +475,10 @@ interface DrawingTemplate {
   created_at: string
   // 产品模板扩展
   description?: string        // 自然语言描述，用于语义匹配
-  bom_template?: BOMTemplateRow[] // BOM骨架，{{主体}}等占位符由AI代入
+  bom_template?: BOMTemplateRow[] // BOM骨架（零件/参考材质/数量），材质由牌1/牌2规则重填
   rules?: string              // 自然语言约束规则
   image_url?: string
+  codes?: Record<string, string>  // 归一码 {U2,U3,U4,U5,U6,U7}，骨架匹配键
 }
 
 function matchDrawing(item: QuoteItem, drawings: DrawingTemplate[]): DrawingTemplate | null {
@@ -1980,6 +1981,7 @@ function PageDrawings({ drawings, setDrawings }: {
         description:  data.description ?? '',
         bom_template: Array.isArray(data.bom_template) ? data.bom_template : [],
         rules:        data.rules ?? '',
+        codes:        data.codes && typeof data.codes === 'object' ? data.codes : undefined,
       })
       setPendingId(newId)
     } catch {

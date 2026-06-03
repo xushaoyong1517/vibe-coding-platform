@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { pdfFirstPageToJpeg, extractPdfText } from '@/lib/pdf-to-image'
+import { computeDrawingCodes } from '@/lib/drawing-codes'
 
 const SYSTEM_PROMPT_BASE = `你是阀门工程图纸解析专家。从提供的图纸信息中提取结构化信息，严格以JSON格式返回，不包含任何其他文字。
 
@@ -58,26 +59,13 @@ function postProcessBom(rows: BOMRow[]): BOMRow[] {
     return true
   })
 
-  return rows.map(r => {
-    const name = r.零件
-    let mat = r.材质
-
-    // 3. 确定性占位符替换
-    if (['阀体', '阀盖', '支架', '填料压板'].some(k => name === k || name.includes(k))) {
-      mat = '{{主体}}'
-    } else if ((name === '阀杆' || name.startsWith('阀杆')) && !name.includes('螺母')) {
-      mat = '{{阀杆轴}}'
-    } else if (['闸板', '阀瓣', '蝶板', '碟板'].some(k => name.includes(k))) {
-      mat = '{{阀瓣阀闸}}'
-    } else if (name === '阀座') {
-      mat = '{{阀座}}'
-    }
-
-    // 4. 螺栓/螺母数量改为"按DN"
-    const qty = FASTENER_RE.test(name) ? '按DN' : r.数量
-
-    return { 零件: name, 材质: mat, 数量: qty }
-  })
+  // 产出骨架：保留图上参考材质（derive 用 buildBomFromSkeleton 按牌1/牌2 规则重填，
+  // 不再写 {{占位符}}）；螺栓/螺母数量按DN。
+  return rows.map(r => ({
+    零件: r.零件,
+    材质: r.材质,                                   // 参考材质（规则会覆盖）
+    数量: FASTENER_RE.test(r.零件) ? '按DN' : r.数量,
+  }))
 }
 
 function normalizeBom(raw: unknown): BOMRow[] {
@@ -206,6 +194,12 @@ export async function POST(req: Request) {
     else if (lastPart.includes('手轮')) parsed.actuator = '手轮'
   }
 
-  console.log('[parse] done, method:', usedMethod, 'bom rows:', (parsed.bom_template as unknown[])?.length ?? 0)
-  return NextResponse.json({ ...parsed, pdf_url: pdfUrl, _method: usedMethod })
+  // Step 5: 归一码（与明细行/历史行同一套键，供 BOM 骨架匹配）
+  const codes = computeDrawingCodes(
+    String(parsed.name ?? ''), parsed.valve_type as string | undefined,
+    parsed.pressure as number | undefined, parsed.actuator as string | undefined,
+  )
+
+  console.log('[parse] done, method:', usedMethod, 'bom rows:', (parsed.bom_template as unknown[])?.length ?? 0, 'codes:', JSON.stringify(codes))
+  return NextResponse.json({ ...parsed, codes, pdf_url: pdfUrl, _method: usedMethod })
 }
