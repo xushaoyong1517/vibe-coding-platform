@@ -40,6 +40,10 @@ interface QuoteItem {
   待确认?: string[]
   特殊?: string
   备注?: string
+  // 归一身份（enrich 持久化，供 BOM 骨架匹配/重算）
+  codes?: Record<string, string>            // 核心码 {U2..U9}
+  code?: string                             // 重拼工厂编号
+  match?: { level: string; count: number }  // 历史命中快照
 }
 
 interface ParamLibrary {
@@ -1004,7 +1008,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   const [correlationId, setCorrelationId] = useState<string>('')  // 一次报价会话，串起事件闭环
   // 归一化+历史匹配结果（按 item 下标）
   type PrefillHint = { unit: string; unitName: string; code: string; cn: string }
-  type MatchInfo = { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[]; hint: PrefillHint[]; code: string | null }
+  type MatchInfo = { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[]; hint: PrefillHint[]; code: string | null; codes: Record<string, string> }
   const [matchByIdx, setMatchByIdx] = useState<Record<number, MatchInfo>>({})
   const enrichItems = async (items: QuoteItem[]) => {
     try {
@@ -1012,8 +1016,8 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       const d = await res.json()
       if (!d.ok) return
       const m: Record<number, MatchInfo> = {}
-      d.items.forEach((it: { _match: Omit<MatchInfo, 'unmatched' | 'hint' | 'code'>; _unmatched: string[]; _prefillHint: PrefillHint[]; _code: string | null }, i: number) => {
-        m[i] = { ...it._match, unmatched: it._unmatched ?? [], hint: it._prefillHint ?? [], code: it._code ?? null }
+      d.items.forEach((it: { _match: Omit<MatchInfo, 'unmatched' | 'hint' | 'code' | 'codes'>; _norm: Record<string, string>; _unmatched: string[]; _prefillHint: PrefillHint[]; _code: string | null }, i: number) => {
+        m[i] = { ...it._match, unmatched: it._unmatched ?? [], hint: it._prefillHint ?? [], code: it._code ?? null, codes: it._norm ?? {} }
       })
       setMatchByIdx(m)
       // 未识别字段并入「待确认」→ 触发金色高亮 + 推断✓（复用置信度UI）
@@ -1289,7 +1293,16 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       状态: '草稿',
       台计: extracted.reduce((s, i) => s + (i.数量 || 1), 0),
       原始需求: input,
-      items: extracted.map(i => ({ ...i, 规格: i.工厂编号 || '' })),
+      items: extracted.map((i, idx) => {
+        const mi = matchByIdx[idx]
+        return {
+          ...i,
+          规格: mi?.code || i.工厂编号 || '',           // 优先重拼码
+          ...(mi?.codes ? { codes: mi.codes } : {}),    // 归一核心码
+          ...(mi?.code ? { code: mi.code } : {}),       // 重拼工厂编号
+          ...(mi ? { match: { level: mi.level, count: mi.count } } : {}),
+        }
+      }),
       bomData: bomResults,
     }
 
@@ -4000,8 +4013,13 @@ function PageQuoteLineDetail({ quote, lineIdx, setQuotes, persist, setPage }: {
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
           <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 24, fontWeight: 800, flex: 1 }}>
-            <InlineInput value={item.规格 || item.工厂编号 || ''} onCommit={v => patchItem({ 规格: v })} mono placeholder="产品型号" style={{ fontSize: 24, fontWeight: 800 }} />
+            <InlineInput value={item.code || item.规格 || item.工厂编号 || ''} onCommit={v => patchItem({ 规格: v })} mono placeholder="产品型号" style={{ fontSize: 24, fontWeight: 800 }} />
           </span>
+          {item.match && (
+            item.match.level === 'exact' ? <Tag color={C.green}>✓ 历史精确 ×{item.match.count}次</Tag>
+            : item.match.level === 'similar' ? <Tag color={C.blue}>≈ 历史相似 ×{item.match.count}次</Tag>
+            : <Tag color={C.textLight}>新配置</Tag>
+          )}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
             <span style={{ fontSize: 12, color: C.textLight }}>数量</span>
             <span style={{ width: 70 }}><InlineInput value={String(item.数量)} onCommit={v => patchItem({ 数量: Number(v) || 1 })} mono style={{ fontSize: 22, fontWeight: 800 }} /></span>
