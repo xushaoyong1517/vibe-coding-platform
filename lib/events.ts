@@ -1,6 +1,6 @@
 // 事件流类型 + 纯函数辅助。前后端共用。
 
-export type EventType = 'bom_generated' | 'bom_confirmed' | 'quote_confirmed' | 'parameters_extracted' | 'rule_applied'
+export type EventType = 'bom_generated' | 'bom_confirmed' | 'quote_confirmed' | 'parameters_extracted' | 'rule_applied' | 'status_changed'
 
 /**
  * 「牌1直填零件 → 牌1字段位」映射。

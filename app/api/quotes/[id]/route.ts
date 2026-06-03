@@ -8,9 +8,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
   const tenantId = getTenantId(req)
   const body = await req.json()
   const data = body.data ?? body
+  // 状态真列与 data.状态 同写，便于 DB 侧过滤/报表/RLS
+  const status = typeof data?.状态 === 'string' && data.状态 ? data.状态 : undefined
   const { error } = await supabase
     .from('quotes')
-    .update({ data })
+    .update(status ? { data, status } : { data })
     .eq('id', id)
     .eq('tenant_id', tenantId)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

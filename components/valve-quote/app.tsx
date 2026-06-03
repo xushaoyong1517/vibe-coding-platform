@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-tables'
 import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
+import { STATUS_COLOR, STATUS_META, nextStates, transitionBlockReason } from '@/lib/quote-status'
 
 // 事件流：不可变事实日志，fire-and-forget，绝不阻塞主流程
 function emitEvent(ev: EventInput) {
@@ -706,7 +707,7 @@ const C = {
   green: '#2a7a4b',
   amber: '#b8860b',
   tag: { 闸阀: '#2c6fbb', 截止阀: '#c05028', 止回阀: '#2a7a4b' } as Record<string, string>,
-  status: { 已确认: '#2a7a4b', 报价中: '#b8860b', 草稿: '#7a7a70' } as Record<string, string>,
+  status: STATUS_COLOR,
 }
 
 // ════════════════════════════════════════════════════
@@ -1339,7 +1340,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
 
     // 持久化到 Supabase
     const [qRes, pRes] = await Promise.all([
-      supabase.from('quotes').insert({ id: newQuote.id, salesperson: 业务员, data: newQuote, tenant_id: tenantId }),
+      supabase.from('quotes').insert({ id: newQuote.id, salesperson: 业务员, data: newQuote, status: newQuote.状态, tenant_id: tenantId }),
       supabase.from('params').upsert(upsertRows.map(p => ({ id: p.id, data: p, updated_at: new Date().toISOString(), tenant_id: tenantId }))),
     ])
     if (qRes.error) {
@@ -2973,7 +2974,7 @@ function PageLearning() {
   const head = { ...cell, textAlign: 'left' as const, borderBottom: `2px solid ${C.border}`, fontSize: 11, fontWeight: 600, color: C.textDim, background: '#f5f5f0' }
 
   const EVENT_LABEL: Record<string, string> = {
-    bom_generated: 'BOM已生成', bom_confirmed: 'BOM已确认', quote_confirmed: '报价单已确认', parameters_extracted: '参数已提取',
+    bom_generated: 'BOM已生成', bom_confirmed: 'BOM已确认', quote_confirmed: '报价单已确认', parameters_extracted: '参数已提取', status_changed: '状态变更',
   }
 
   return (
@@ -3843,7 +3844,6 @@ function bomSrcColor(src: string): string {
 const SUM_KEY_FIELDS: [string, keyof QuoteItem][] = [
   ['主体', '主体'], ['阀座', '阀座'], ['阀瓣/闸', '阀瓣阀闸'], ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'],
 ]
-const QUOTE_STATUSES = ['草稿', '报价中', '已确认', '已下单']
 
 function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
   quote: Quote
@@ -3855,6 +3855,23 @@ function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
   const update = (next: Quote) => { setQuotes(qs => qs.map(q => q.id === next.id ? next : q)); persist(next) }
   const patch = (p: Partial<Quote>) => update({ ...quote, ...p })
   const totalUnits = quote.items.reduce((s, i) => s + (i.数量 || 0), 0)
+
+  // 状态流转：守卫 → 打时间戳 → 发事件(成交真值喂飞轮) → 落库
+  const changeStatus = (to: string) => {
+    if (to === quote.状态) return
+    const block = transitionBlockReason(to, { hasBom: !!quote.bomData?.length })
+    if (block) { alert(block); return }
+    const meta = STATUS_META[to as keyof typeof STATUS_META]
+    const stamp = meta?.ts ? { [meta.ts]: new Date().toISOString() } : {}
+    patch({ 状态: to, ...stamp } as Partial<Quote>)
+    emitEvent({
+      event_type: 'status_changed', actor: '业务员', quote_id: quote.id,
+      valve_spec: quote.items[0] ? valveSpec(quote.items[0]) : undefined,
+      refs: { customer: quote.客户 },
+      payload: { from: quote.状态, to, truth: meta?.truth, 台计: totalUnits },
+    })
+  }
+  const stateOptions = [quote.状态, ...nextStates(quote.状态).filter(s => s !== quote.状态)]
 
   const printBom = async () => {
     const res = await fetch(`/api/quotes/${quote.id}/print`, {
@@ -3882,10 +3899,12 @@ function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <Btn variant="ghost" small onClick={goBack}>← 返回</Btn>
         <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 20, fontWeight: 800 }}>{quote.订单号}</span>
-        <select value={quote.状态} onChange={e => patch({ 状态: e.target.value })}
-          style={{ border: `1px solid ${C.border}`, borderRadius: 999, padding: '3px 10px', fontSize: 12, fontWeight: 600, color: C.status[quote.状态] ?? C.textDim, background: (C.status[quote.状态] ?? C.textLight) + '1e', cursor: 'pointer', fontFamily: 'inherit' }}>
-          {QUOTE_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
+        {STATUS_META[quote.状态 as keyof typeof STATUS_META]?.terminal
+          ? <Tag color={C.status[quote.状态] ?? C.textDim}>{quote.状态}</Tag>
+          : <select value={quote.状态} onChange={e => changeStatus(e.target.value)}
+              style={{ border: `1px solid ${C.border}`, borderRadius: 999, padding: '3px 10px', fontSize: 12, fontWeight: 600, color: C.status[quote.状态] ?? C.textDim, background: (C.status[quote.状态] ?? C.textLight) + '1e', cursor: 'pointer', fontFamily: 'inherit' }}>
+              {stateOptions.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>}
         <div style={{ flex: 1 }} />
         <Btn variant="ghost" small onClick={() => alert('复制报价单（即将上线）')}>复制</Btn>
         {quote.bomData?.length ? <Btn variant="secondary" small onClick={printBom}>🖨 打印 / 导出 PDF</Btn> : null}
