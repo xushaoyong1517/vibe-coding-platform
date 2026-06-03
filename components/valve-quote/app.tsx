@@ -6,6 +6,7 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, 
 import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-tables'
 import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
 import { QUOTE_STATUSES, STATUS_COLOR, STATUS_META, nextStates, transitionBlockReason } from '@/lib/quote-status'
+import { matchDrawing } from '@/lib/match-drawing'
 
 // 事件流：不可变事实日志，fire-and-forget，绝不阻塞主流程
 function emitEvent(ev: EventInput) {
@@ -343,23 +344,6 @@ interface DrawingTemplate {
   rules?: string              // 自然语言约束规则
   image_url?: string
   codes?: Record<string, string>  // 归一码 {U2,U3,U4,U5,U6,U7}，骨架匹配键
-}
-
-function matchDrawing(item: QuoteItem, drawings: DrawingTemplate[]): DrawingTemplate | null {
-  return (
-    drawings.find(d =>
-      d.valve_type === item.类型 &&
-      d.pressure === item.压力 &&
-      d.actuator === item.驱动 &&
-      item.DN >= d.dn_min && item.DN <= d.dn_max
-    ) ??
-    drawings.find(d =>
-      d.valve_type === item.类型 &&
-      d.pressure === item.压力 &&
-      item.DN >= d.dn_min && item.DN <= d.dn_max
-    ) ??
-    null
-  )
 }
 
 type PageState =
@@ -1080,8 +1064,8 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
         const item = extracted[i]
         const label = `第 ${i + 1}/${total} 条：${item.类型} DN${item.DN}`
         setProgress({ pct: Math.round((i / total) * 90), label })
-        // Step 1：匹配产品模板骨架（历史参数匹配已停用）
-        const tpl = matchDrawing(item, drawings)
+        // Step 1：按归一码匹配小样图（U2类型+U5结构+U4连接+U6密封 分级，中文兜底）
+        const tpl = matchDrawing(item, drawings, matchByIdx[i]?.codes)
         const hasTpl = !!tpl?.bom_template?.length
 
         // Step 2a：确定性合成（DB 牌1/牌2，零幻觉、零 token）
