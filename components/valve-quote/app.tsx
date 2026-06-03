@@ -1035,6 +1035,19 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
     return [...new Set(params.map(p => String((p as unknown as Record<string, unknown>)[field] ?? '')).filter(Boolean))].sort()
   }
 
+  // 参数词典（用于编辑下拉的候选）
+  const [dictUnits, setDictUnits] = useState<{ unit: string; entries: { code: string; cn: string; short?: string }[] }[]>([])
+  useEffect(() => { fetch('/api/param-units').then(r => r.json()).then(d => { if (Array.isArray(d.units)) setDictUnits(d.units) }).catch(() => { /* 词典加载失败不阻塞 */ }) }, [])
+  const fieldOptions = (field: string): string[] => {
+    const u = (code: string) => dictUnits.find(x => x.unit === code)
+    if (field === '类型') return u('U2')?.entries.map(e => e.cn) ?? ['闸阀', '截止阀', '止回阀', '球阀', '蝶阀']
+    if (field === '主体') return u('U8')?.entries.map(e => e.short ?? e.cn) ?? []
+    if (field === 'DN') return u('U9')?.entries.map(e => e.code) ?? []
+    if (field === '压力') return ['150', '300', '600', '900', '1500', '2500']
+    if (field === '件号') return ['1#', '2#', '5#', '8#', '10#', '12#', '15#', '16#']
+    return getMaterialOptions()  // 材质类字段
+  }
+
   const getMaterialOptions = (): string[] => {
     const fromBom = bomResults?.flatMap(r => r.bom.map(row => row.材质)) ?? []
     const base = [
@@ -1505,7 +1518,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       {step === 1 && extracted && (
         <Card
           title={`参数提取结果（${extracted.length} 行）`}
-          extra={<Btn variant="ghost" small onClick={() => { setStep(0); setExtracted(null) }}>← 重新输入</Btn>}
         >
           {inferTotal > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 14px', borderRadius: 10, background: '#fffaf0', border: '1px solid #f0dcae', fontSize: 13, color: '#8a6a1e', marginBottom: 14 }}>
@@ -1517,12 +1529,15 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
           )}
           {extracted.map((item, idx) => {
 
-            // 3行3列 + 件号（API标准时显示）
+            // 3行3列 + 件号（API标准时显示）；闭合件/阀杆标签随阀型自适应
             const isAPI = !item.设计标准 || item.设计标准.includes('API')
+            const t = item.类型 ?? ''
+            const closureLabel = /闸/.test(t) ? '闸板' : /球|蝶/.test(t) ? '球体/阀板' : '阀瓣'
+            const stemLabel = /球|蝶/.test(t) ? '阀轴' : '阀杆'
             const FIELDS: [string, keyof QuoteItem][] = [
               ['类型', '类型'], ['DN', 'DN'], ['压力', '压力'],
-              ['主体', '主体'], ['阀瓣/阀闸', '阀瓣阀闸'], ['阀座', '阀座'],
-              ['阀杆/轴', '阀杆轴'], ['螺柱', '螺柱'], ['填料', '中腔填料'],
+              ['主体', '主体'], [closureLabel, '阀瓣阀闸'], ['阀座', '阀座'],
+              [stemLabel, '阀杆轴'], ['螺柱', '螺柱'], ['填料', '中腔填料'],
               ...(isAPI ? [['件号 (API)', '件号'] as [string, keyof QuoteItem]] : []),
             ]
 
@@ -1554,7 +1569,6 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                   })()}
                   {errCount  > 0 && <Tag color={C.accent}>{errCount} 个错误</Tag>}
                   {warnCount > 0 && <Tag color={C.amber}>{warnCount} 个警告</Tag>}
-                  <Btn variant="ghost" small onClick={() => dupItem(idx)}>复制</Btn>
                   <Btn variant="ghost" small onClick={() => delItem(idx)} disabled={extracted.length <= 1}>删除</Btn>
                 </div>
 
@@ -1575,11 +1589,11 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                               style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.amber, padding: '1px 5px', borderRadius: 3, cursor: 'pointer' }}>推断 ✓</span>
                           )}
                         </div>
-                        <input
+                        <Combobox
+                          label=""
                           value={String(item[field] ?? '')}
-                          onChange={e => updateField(idx, field, e.target.value)}
-                          placeholder="—"
-                          style={{ width: '100%', border: 'none', outline: 'none', background: infer ? '#fdeecb' : 'transparent', borderRadius: 3, fontSize: 14, fontWeight: 600, color: C.text, fontFamily: 'inherit', padding: '1px 3px' }}
+                          options={fieldOptions(field as string)}
+                          onChange={v => updateField(idx, field, v)}
                         />
                       </div>
                     )
