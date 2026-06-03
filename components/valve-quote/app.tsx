@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-tables'
 import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
-import { STATUS_COLOR, STATUS_META, nextStates, transitionBlockReason } from '@/lib/quote-status'
+import { QUOTE_STATUSES, STATUS_COLOR, STATUS_META, nextStates, transitionBlockReason } from '@/lib/quote-status'
 
 // 事件流：不可变事实日志，fire-and-forget，绝不阻塞主流程
 function emitEvent(ev: EventInput) {
@@ -4328,12 +4328,23 @@ function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
   const weekQuotes = useMemo(() => quotes.filter(q => q.日期 >= weekStartStr).length, [quotes, weekStartStr])
   const totalItems = useMemo(() => quotes.reduce((s, q) => s + q.items.length, 0), [quotes])
 
+  // 状态管道：各状态计数 + 赢单率（已下单 / (已下单+已失单)）
+  const statusCounts = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const q of quotes) { const s = q.状态 || '草稿'; m[s] = (m[s] ?? 0) + 1 }
+    return m
+  }, [quotes])
+  const won = statusCounts['已下单'] ?? 0
+  const lost = statusCounts['已失单'] ?? 0
+  const winRate = won + lost > 0 ? Math.round((won / (won + lost)) * 100) : null
+  const followUpCount = statusCounts['已发送'] ?? 0
+
   // 最近活动（由报价单派生）
   const feed = useMemo(() =>
     [...quotes].sort((a, b) => (b.日期 + b.id).localeCompare(a.日期 + a.id)).slice(0, 5).map(q => ({
       id: q.id, q,
-      label: q.状态 === '已确认' ? `${q.订单号} 已提交报价单` : `${q.订单号} 新建草稿（${q.客户}）`,
-      color: q.状态 === '已确认' ? C.green : C.blue, date: q.日期,
+      label: `${q.订单号} · ${q.状态}（${q.客户}）`,
+      color: STATUS_COLOR[q.状态] ?? C.blue, date: q.日期,
     })), [quotes])
 
   const dayLabel = (d: string) => d === todayStr ? `今天 · ${d.slice(5)}` : d.slice(5)
@@ -4345,7 +4356,31 @@ function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
         <span style={{ fontSize: 22, fontWeight: 800 }}>{greet}{业务员 ? `，${业务员}` : ''} 👋</span>
         <span style={{ fontSize: 13, color: C.textLight, marginLeft: 10 }}>
           {weekday} · {todayStr} · {draftCount > 0 ? <>今天有 <b style={{ color: C.accent }}>{draftCount}</b> 张草稿待处理</> : '暂无待处理草稿'}
+          {followUpCount > 0 && <> · <b style={{ color: STATUS_COLOR['已发送'] }}>{followUpCount}</b> 张待客户回复</>}
         </span>
+      </div>
+
+      {/* 状态管道：报价单全生命周期一览 */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'stretch' }}>
+        {QUOTE_STATUSES.filter(s => s !== '作废' || (statusCounts['作废'] ?? 0) > 0).map(s => {
+          const n = statusCounts[s] ?? 0
+          const color = STATUS_COLOR[s]
+          return (
+            <div key={s} onClick={() => setPage({ name: 'quotes' })}
+              style={{ flex: '1 1 0', minWidth: 92, background: '#fff', border: `1px solid ${C.border}`, borderTop: `3px solid ${color}`, borderRadius: 9, padding: '10px 13px', cursor: 'pointer', opacity: n === 0 ? 0.55 : 1, transition: 'box-shadow .15s, transform .12s' }}
+              onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 14px rgba(20,24,28,0.07)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+              onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.transform = 'none' }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color, fontFamily: "'DM Mono',monospace", lineHeight: 1.1 }}>{n}</div>
+              <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>{s}</div>
+            </div>
+          )
+        })}
+        {winRate !== null && (
+          <div style={{ flex: '1 1 0', minWidth: 92, background: `${STATUS_COLOR['已下单']}0e`, border: `1px solid ${STATUS_COLOR['已下单']}40`, borderTop: `3px solid ${STATUS_COLOR['已下单']}`, borderRadius: 9, padding: '10px 13px' }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color: STATUS_COLOR['已下单'], fontFamily: "'DM Mono',monospace", lineHeight: 1.1 }}>{winRate}%</div>
+            <div style={{ fontSize: 12, color: C.textDim, marginTop: 2 }}>赢单率 <span style={{ color: C.textLight }}>({won}/{won + lost})</span></div>
+          </div>
+        )}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, alignItems: 'start' }}>
