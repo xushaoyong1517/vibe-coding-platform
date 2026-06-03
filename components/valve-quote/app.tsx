@@ -3569,10 +3569,11 @@ function PageProductDetail({ product, goBack }: { product: ValveProduct; goBack:
 // PAGE: 报价单列表 + 详情
 // ════════════════════════════════════════════════════
 
-function PageQuotes({ quotes, setQuotes, setPage }: {
+function PageQuotes({ quotes, setQuotes, setPage, search = '' }: {
   quotes: Quote[]
   setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
   setPage: (p: PageState) => void
+  search?: string
 }) {
   const handleDelete = async (q: Quote) => {
     if (!confirm(`确认删除报价单「${q.订单号}」？\n\n⚠️ 删除后无法找回，请确认。`)) return
@@ -3580,8 +3581,13 @@ function PageQuotes({ quotes, setQuotes, setPage }: {
     setQuotes(prev => prev.filter(x => x.id !== q.id))
   }
 
+  const q = search.trim().toLowerCase()
+  const filtered = q
+    ? quotes.filter(qt => [qt.订单号, qt.客户, ...qt.items.map(i => `${i.工厂编号 ?? ''} ${i.code ?? ''} ${i.类型 ?? ''}`)].join(' ').toLowerCase().includes(q))
+    : quotes
+
   return (
-    <Card title="报价单" extra={<Btn small onClick={() => setPage({ name: 'newQuote' })}>+ 新建报价</Btn>}>
+    <Card title={search.trim() ? `报价单 · 搜索「${search.trim()}」共 ${filtered.length} 条` : '报价单'} extra={<Btn small onClick={() => setPage({ name: 'newQuote' })}>+ 新建报价</Btn>}>
       <DataTable
         columns={[
           {
@@ -3605,7 +3611,7 @@ function PageQuotes({ quotes, setQuotes, setPage }: {
             ),
           },
         ]}
-        data={quotes as unknown as Record<string, unknown>[]}
+        data={filtered as unknown as Record<string, unknown>[]}
       />
     </Card>
   )
@@ -4355,19 +4361,16 @@ function PageDashboard({ quotes, drawings, setQuotes, persist, setPage, 业务�
 // ════════════════════════════════════════════════════
 
 const NAV = [
-  { id: 'dashboard',   icon: '◉', label: '首页',       group: '' },
-  { id: 'newQuote',    icon: '⊕', label: '新建报价',   group: '核心流程' },
-  { id: 'quotes',      icon: '☰', label: '报价单',     group: '核心流程' },
-  { id: 'quoteItems',  icon: '≡', label: '报价明细', group: '核心流程' },
-  { id: 'drawings',    icon: '📐', label: '小样图库',   group: '数据管理' },
-  // { id: 'paramLib',    icon: '◈', label: '参数库',     group: '数据管理' },  // 暂时隐藏
-  { id: 'valveCodeRef', icon: '⊟', label: '阀门参数库', group: '数据管理' },
-  { id: 'params',      icon: '⬡', label: '阀门产品库', group: '数据管理' },
-  { id: 'rules',       icon: '☶', label: '规则库',     group: '数据管理' },
-  { id: 'paramUnits',  icon: '❖', label: '参数词典',   group: '数据管理' },
-  // { id: 'learning',    icon: '✦', label: '学习看板',   group: '数据管理' },  // 暂时隐藏
-  // { id: 'valveParts',  icon: '⊞', label: '零件库',     group: '数据管理' },  // 暂时隐藏
-  { id: 'dataInit',    icon: '⊕', label: '初始化',     group: '数据管理' },
+  { id: 'dashboard',    icon: '🏠', label: '工作台',     group: 'main' },
+  { id: 'quotes',       icon: '📄', label: '报价单',     group: 'main' },
+  { id: 'quoteItems',   icon: '≣',  label: '报价明细',   group: 'main' },
+  { id: 'newQuote',     icon: '＋', label: '新建报价',   group: 'action' },
+  { id: 'drawings',     icon: '📐', label: '小样图库',   group: 'data' },
+  { id: 'valveCodeRef', icon: '⊟',  label: '阀门参数库', group: 'data' },
+  { id: 'params',       icon: '⬡',  label: '阀门产品库', group: 'data' },
+  { id: 'rules',        icon: '☶',  label: '规则库',     group: 'data' },
+  { id: 'paramUnits',   icon: '❖',  label: '参数词典',   group: 'data' },
+  { id: 'dataInit',     icon: '⊕',  label: '初始化',     group: 'data' },
 ]
 
 // ════════════════════════════════════════════════════
@@ -4451,6 +4454,8 @@ export function ValveQuoteApp() {
   const [drawings, setDrawings] = useState<DrawingTemplate[]>([])
   const [业务员, set业务员] = useState<string>('')
   const [loaded, setLoaded] = useState(false)
+  const [menu, setMenu] = useState<'data' | 'user' | null>(null)   // 顶栏下拉
+  const [search, setSearch] = useState('')                          // 顶栏搜索
 
   // 客户端初始化：从 localStorage 恢复业务员和 paramLib
   useEffect(() => {
@@ -4519,7 +4524,7 @@ export function ValveQuoteApp() {
     switch (page.name) {
       case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setQuotes={setQuotes} persist={persistQuote} setPage={setPage} 业务员={业务员} />
       case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} tenantId={auth.tenant_id} />
-      case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
+      case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} search={search} />
       case 'quoteDetail': {
         const q = quotes.find(x => x.id === page.data.id) ?? page.data
         return <PageQuoteDetail quote={q} setQuotes={setQuotes} persist={persistQuote} drawings={drawings} goBack={() => setPage({ name: 'quotes' })} setPage={setPage} />
@@ -4542,72 +4547,116 @@ export function ValveQuoteApp() {
     }
   }
 
-  let prevGroup = ''
+  const NAV_MAIN = NAV.filter(n => n.group === 'main')
+  const NAV_DATA = NAV.filter(n => n.group === 'data')
+  const dataActive = NAV_DATA.some(n => n.id === page.name)
+  const followUp = quotes.filter(q => q.状态 === '已发送').length
+
+  // 顶栏主导航项（纯函数，非组件，避免重挂载）
+  const navItem = (n: { id: string; label: string; icon: string }) => {
+    const active = page.name === n.id || (n.id === 'quotes' && page.name === 'quoteDetail')
+    return (
+      <button key={n.id} onClick={() => setPage({ name: n.id } as PageState)}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, background: active ? C.accent + '18' : 'transparent', color: active ? C.accent : C.textDim, fontWeight: active ? 700 : 500, fontSize: 14, padding: '7px 13px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}
+        onMouseEnter={e => { if (!active) e.currentTarget.style.background = '#f3f3f0' }}
+        onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}>
+        <span style={{ fontSize: 13 }}>{n.icon}</span>{n.label}
+      </button>
+    )
+  }
+  const menuRow = (label: string, onClick: () => void, danger = false) => (
+    <div onClick={onClick}
+      style={{ padding: '8px 12px', borderRadius: 7, fontSize: 13, cursor: 'pointer', color: danger ? '#c0392b' : C.text, fontWeight: 500 }}
+      onMouseEnter={e => (e.currentTarget.style.background = danger ? '#c0392b12' : '#f3f3f0')}
+      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>{label}</div>
+  )
+
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: "'Noto Sans SC','Helvetica Neue',sans-serif", color: C.text, background: C.bg }}>
-      {/* 侧边栏 */}
-      <div style={{ width: 190, background: C.sidebar, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-        <div style={{ padding: '18px 14px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: '#fff' }}><span style={{ color: C.accent }}>⬡</span> {auth.name}</div>
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 2 }}>阀门智能报价 v2.0 · {auth.tenant_id}</div>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', fontFamily: "'Noto Sans SC','Helvetica Neue',sans-serif", color: C.text, background: C.bg }}>
+      {/* 顶栏 */}
+      <header style={{ flexShrink: 0, height: 58, background: '#fff', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: 4, padding: '0 16px', position: 'relative', zIndex: 50 }}>
+        {/* Logo */}
+        <div onClick={() => setPage({ name: 'dashboard' })} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginRight: 10 }}>
+          <span style={{ color: C.accent, fontSize: 20 }}>◉</span>
+          <span style={{ fontWeight: 800, fontSize: 16 }}>越强阀门</span>
+          <span style={{ color: C.textLight, fontSize: 13 }}>智能报价</span>
         </div>
-        <nav className="vq-scroll-dark" style={{ padding: '6px 0', flex: 1, overflowY: 'auto', minHeight: 0 }}>
-          {NAV.map(n => {
-            const active = page.name === n.id || (page.name === 'quoteDetail' && n.id === 'quotes')
-            let groupLabel: string | null = null
-            if (n.group && n.group !== prevGroup) { groupLabel = n.group; prevGroup = n.group }
-            return (
-              <div key={n.id}>
-                {groupLabel && <div style={{ padding: '10px 14px 4px', fontSize: 10, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{groupLabel}</div>}
-                <div
-                  onClick={() => setPage({ name: n.id } as PageState)}
-                  style={{ padding: '8px 14px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 9, background: active ? C.sideActive : 'transparent', color: active ? '#fff' : 'rgba(255,255,255,0.5)', fontSize: 13, fontWeight: active ? 600 : 400, borderLeft: active ? `3px solid ${C.accent}` : '3px solid transparent' }}
-                  onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = C.sideHover }}
-                  onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'transparent' }}
-                >
-                  <span style={{ fontSize: 14, width: 18, textAlign: 'center' }}>{n.icon}</span>{n.label}
-                </div>
-              </div>
-            )
-          })}
-        </nav>
-        {/* 底部：业务员 + 账户 */}
-        <div style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.08)', background: 'rgba(0,0,0,0.15)', padding: '10px 10px 16px' }}>
-          {/* 业务员（可点击设置） */}
-          <div
-            onClick={() => {
-              const name = prompt('请输入您的姓名：', 业务员)
-              if (name !== null) { const t = name.trim(); set业务员(t); localStorage.setItem('vq-salesperson', t) }
-            }}
-            title="点击修改业务员姓名"
-            style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 8px', borderRadius: 7, cursor: 'pointer', transition: 'background 0.15s' }}
-            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
-            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-          >
-            <div style={{ width: 30, height: 30, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 业务员 ? C.accent : 'rgba(255,255,255,0.12)', color: '#fff', fontSize: 13, fontWeight: 700 }}>
-              {业务员 ? 业务员[0] : '?'}
+
+        {/* 主导航 */}
+        {NAV_MAIN.map(navItem)}
+
+        {/* 数据与规则 ▾ */}
+        <div style={{ position: 'relative' }}>
+          <button onClick={() => setMenu(menu === 'data' ? null : 'data')}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, border: 0, background: dataActive || menu === 'data' ? C.accent + '18' : 'transparent', color: dataActive ? C.accent : C.textDim, fontWeight: dataActive ? 700 : 500, fontSize: 14, padding: '7px 13px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}>
+            <span style={{ fontSize: 13 }}>⊟</span>数据与规则 <span style={{ fontSize: 10, opacity: 0.7 }}>▾</span>
+          </button>
+          {menu === 'data' && (
+            <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, background: '#fff', border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 10px 30px rgba(20,24,28,0.13)', padding: 6, minWidth: 174, zIndex: 60 }}>
+              {NAV_DATA.map(n => {
+                const active = page.name === n.id
+                return (
+                  <div key={n.id} onClick={() => { setPage({ name: n.id } as PageState); setMenu(null) }}
+                    style={{ padding: '8px 12px', borderRadius: 7, fontSize: 13.5, cursor: 'pointer', color: active ? C.accent : C.text, fontWeight: active ? 700 : 500, background: active ? C.accent + '12' : 'transparent', display: 'flex', gap: 9, alignItems: 'center' }}
+                    onMouseEnter={e => { if (!active) e.currentTarget.style.background = '#f3f3f0' }}
+                    onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}>
+                    <span style={{ fontSize: 13, width: 16, textAlign: 'center' }}>{n.icon}</span>{n.label}
+                  </div>
+                )
+              })}
             </div>
-            <div style={{ overflow: 'hidden' }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: 业务员 ? 'rgba(255,255,255,0.85)' : C.amber, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {业务员 || '点击设置姓名'}
-              </div>
-              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)' }}>业务员 · {auth.role}</div>
+          )}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* 新建报价 */}
+        <button onClick={() => setPage({ name: 'newQuote' })}
+          style={{ background: C.accent, color: '#fff', border: 0, borderRadius: 8, padding: '8px 15px', fontWeight: 700, fontSize: 13.5, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+          ＋ 新建报价
+        </button>
+
+        {/* 搜索 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f1f2f4', borderRadius: 8, padding: '7px 11px', width: 220, marginLeft: 4 }}>
+          <span style={{ color: C.textLight, fontSize: 13 }}>🔍</span>
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') setPage({ name: 'quotes' }) }}
+            placeholder="搜索报价单 / 客户 / 型号"
+            style={{ border: 0, background: 'transparent', outline: 'none', fontSize: 13, flex: 1, minWidth: 0, fontFamily: 'inherit', color: C.text }} />
+        </div>
+
+        {/* 通知（待跟进角标） */}
+        <button onClick={() => setPage({ name: 'dashboard' })} title={followUp ? `${followUp} 张待客户回复` : '暂无待跟进'}
+          style={{ position: 'relative', border: 0, background: 'transparent', cursor: 'pointer', fontSize: 17, padding: '4px 6px', lineHeight: 1 }}>
+          🔔
+          {followUp > 0 && <span style={{ position: 'absolute', top: 2, right: 2, background: '#c0392b', color: '#fff', borderRadius: 999, fontSize: 9, fontWeight: 700, minWidth: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 3px' }}>{followUp}</span>}
+        </button>
+
+        {/* 用户 */}
+        <div style={{ position: 'relative' }}>
+          <div onClick={() => setMenu(menu === 'user' ? null : 'user')}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '3px 5px 3px 6px', borderRadius: 8 }}
+            onMouseEnter={e => (e.currentTarget.style.background = '#f3f3f0')}
+            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+            <div style={{ width: 32, height: 32, borderRadius: '50%', background: 业务员 ? C.accent : '#bbb', color: '#fff', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{业务员 ? 业务员[0] : '?'}</div>
+            <div style={{ lineHeight: 1.2 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' }}>{业务员 || '设置姓名'}</div>
+              <div style={{ fontSize: 10.5, color: C.textLight }}>业务员 · {auth.tenant_id}</div>
             </div>
           </div>
-
-          {/* 账户信息 */}
-          <div style={{ padding: '6px 8px 9px', fontSize: 10.5, color: 'rgba(255,255,255,0.35)', display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span>账户 {auth.username}</span>
-            {auth.empty_password && <span style={{ color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: '0 4px', fontSize: 9 }}>未设密码</span>}
-          </div>
-
-          {/* 操作 */}
-          <div style={{ display: 'flex', gap: 7 }}>
-            <button
-              style={{ flex: 1, padding: '7px 0', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 6, background: 'transparent', color: 'rgba(255,255,255,0.7)', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}
-              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#fff' }}
-              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)' }}
-              onClick={async () => {
+          {menu === 'user' && (
+            <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: '#fff', border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: '0 10px 30px rgba(20,24,28,0.13)', padding: 6, minWidth: 200, zIndex: 60 }}>
+              <div style={{ padding: '6px 12px 8px', fontSize: 11, color: C.textLight }}>
+                账户 {auth.username}
+                {auth.empty_password && <span style={{ color: C.amber, border: `1px solid ${C.amber}`, borderRadius: 3, padding: '0 4px', fontSize: 9, marginLeft: 6 }}>未设密码</span>}
+              </div>
+              {menuRow('✎ 修改姓名', () => {
+                setMenu(null)
+                const name = prompt('请输入您的姓名：', 业务员)
+                if (name !== null) { const t = name.trim(); set业务员(t); localStorage.setItem('vq-salesperson', t) }
+              })}
+              {menuRow('🔑 修改密码', async () => {
+                setMenu(null)
                 const np = prompt(auth.empty_password ? '设置新密码（至少4位）：' : '输入新密码（至少4位）：')
                 if (np === null) return
                 const op = auth.empty_password ? '' : (prompt('输入原密码：') ?? '')
@@ -4615,24 +4664,26 @@ export function ValveQuoteApp() {
                 const d = await res.json()
                 if (res.ok) { alert('密码已更新'); setAuth({ ...auth, empty_password: false, must_change_pw: false }) }
                 else alert('修改失败：' + (d.error || ''))
-              }}>🔑 改密</button>
-            <button
-              style={{ flex: 1, padding: '7px 0', border: `1px solid ${C.accent}55`, borderRadius: 6, background: `${C.accent}22`, color: C.accent, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}
-              onMouseEnter={e => { e.currentTarget.style.background = C.accent; e.currentTarget.style.color = '#fff' }}
-              onMouseLeave={e => { e.currentTarget.style.background = `${C.accent}22`; e.currentTarget.style.color = C.accent }}
-              onClick={async () => {
+              })}
+              <div style={{ height: 1, background: C.borderLight, margin: '4px 0' }} />
+              {menuRow('⎋ 退出登录', async () => {
+                setMenu(null)
                 if (!confirm('确认退出登录？')) return
                 try { await fetch('/api/auth/logout', { method: 'POST' }) } catch { /* 仍清本地态 */ }
                 setQuotes([]); setParams([]); setDrawings([]); setParamLib(initParamLib(SEED_PARAMS))
                 set业务员(''); setLoaded(false); setPage({ name: 'dashboard' })
                 setAuth(null)
-              }}>⎋ 退出登录</button>
-          </div>
+              }, true)}
+            </div>
+          )}
         </div>
-      </div>
+      </header>
+
+      {/* 点击空白关闭下拉 */}
+      {menu && <div onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />}
 
       {/* 主内容区 */}
-      <div className="vq-scroll" style={{ flex: 1, overflow: 'auto', padding: '18px 22px' }}>
+      <div className="vq-scroll" style={{ flex: 1, overflow: 'auto', padding: '20px 26px', minHeight: 0 }}>
         {(() => {
           // 详情页自带标题，不显示外层 h1
           const noHeader = ['quoteDetail', 'quoteLine', 'productDetail', 'dashboard'].includes(page.name)
