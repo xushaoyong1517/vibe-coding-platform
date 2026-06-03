@@ -13,6 +13,28 @@ function emitEvent(ev: EventInput) {
     .catch(() => { /* 事件采集失败不影响业务 */ })
 }
 
+// 状态流转（详情页 + 首页催单区共用）：守卫 → 打时间戳 → 发事件(成交真值喂飞轮) → 落库
+function applyStatusChange(
+  quote: Quote, to: string,
+  opts: { setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>; persist: (q: Quote) => void; actor?: string },
+): boolean {
+  if (to === quote.状态) return false
+  const block = transitionBlockReason(to, { hasBom: !!quote.bomData?.length })
+  if (block) { alert(block); return false }
+  const meta = STATUS_META[to as keyof typeof STATUS_META]
+  const stamp = meta?.ts ? { [meta.ts]: new Date().toISOString() } : {}
+  const next = { ...quote, 状态: to, ...stamp } as Quote
+  opts.setQuotes(qs => qs.map(q => q.id === next.id ? next : q))
+  opts.persist(next)
+  emitEvent({
+    event_type: 'status_changed', actor: opts.actor || '业务员', quote_id: quote.id,
+    valve_spec: quote.items[0] ? valveSpec(quote.items[0]) : undefined,
+    refs: { customer: quote.客户 },
+    payload: { from: quote.状态, to, truth: meta?.truth, 台计: quote.items.reduce((s, i) => s + (i.数量 || 0), 0) },
+  })
+  return true
+}
+
 // SKILL prompts 已移至服务端 app/api/claude/skills/
 // 客户端只传 skill 名称，不暴露提示词内容
 
@@ -152,6 +174,12 @@ interface Quote {
   原始需求?: string
   items: QuoteItem[]
   bomData?: BOMResult[]
+  // 状态机进入各态的时间戳（流转时打）
+  sent_at?: string
+  confirmed_at?: string
+  won_at?: string
+  lost_at?: string
+  voided_at?: string
 }
 
 interface Param {
@@ -3856,21 +3884,7 @@ function PageQuoteDetail({ quote, setQuotes, persist, goBack, setPage }: {
   const patch = (p: Partial<Quote>) => update({ ...quote, ...p })
   const totalUnits = quote.items.reduce((s, i) => s + (i.数量 || 0), 0)
 
-  // 状态流转：守卫 → 打时间戳 → 发事件(成交真值喂飞轮) → 落库
-  const changeStatus = (to: string) => {
-    if (to === quote.状态) return
-    const block = transitionBlockReason(to, { hasBom: !!quote.bomData?.length })
-    if (block) { alert(block); return }
-    const meta = STATUS_META[to as keyof typeof STATUS_META]
-    const stamp = meta?.ts ? { [meta.ts]: new Date().toISOString() } : {}
-    patch({ 状态: to, ...stamp } as Partial<Quote>)
-    emitEvent({
-      event_type: 'status_changed', actor: '业务员', quote_id: quote.id,
-      valve_spec: quote.items[0] ? valveSpec(quote.items[0]) : undefined,
-      refs: { customer: quote.客户 },
-      payload: { from: quote.状态, to, truth: meta?.truth, 台计: totalUnits },
-    })
-  }
+  const changeStatus = (to: string) => applyStatusChange(quote, to, { setQuotes, persist })
   const stateOptions = [quote.状态, ...nextStates(quote.状态).filter(s => s !== quote.状态)]
 
   const printBom = async () => {
@@ -4278,9 +4292,11 @@ function PageQuoteItems({ quotes, drawings, setPage }: {
 // PAGE: 首页 Dashboard
 // ════════════════════════════════════════════════════
 
-function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
+function PageDashboard({ quotes, drawings, setQuotes, persist, setPage, 业务员 }: {
   quotes: Quote[]
   drawings: DrawingTemplate[]
+  setQuotes: React.Dispatch<React.SetStateAction<Quote[]>>
+  persist: (q: Quote) => void
   setPage: (p: PageState) => void
   业务员: string
 }) {
@@ -4337,7 +4353,21 @@ function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
   const won = statusCounts['已下单'] ?? 0
   const lost = statusCounts['已失单'] ?? 0
   const winRate = won + lost > 0 ? Math.round((won / (won + lost)) * 100) : null
-  const followUpCount = statusCounts['已发送'] ?? 0
+
+  // 待跟进催单队列：已发送的报价，按"已发送天数"倒序（停留越久越紧急）
+  const followUpRows = useMemo(() => {
+    const todayMs = now.getTime()
+    return quotes
+      .filter(q => q.状态 === '已发送')
+      .map(q => {
+        const sentMs = new Date(q.sent_at ?? q.日期).getTime()
+        const days = Math.max(0, Math.floor((todayMs - sentMs) / 86400000))
+        const 台计 = q.items.reduce((s, i) => s + (i.数量 || 0), 0)
+        return { q, days, sentDate: (q.sent_at ?? q.日期).slice(0, 10), 台计 }
+      })
+      .sort((a, b) => b.days - a.days)
+  }, [quotes, now])
+  const followUpCount = followUpRows.length
 
   // 最近活动（由报价单派生）
   const feed = useMemo(() =>
@@ -4384,7 +4414,9 @@ function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 16, alignItems: 'start' }}>
-        {/* 左：草稿队列（主角） */}
+        {/* 左：行动队列（草稿待提交 + 待跟进催单） */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+        {/* 草稿队列（主角） */}
         <Card
           title={<span>待办 · 待提交报价 <Tag color={C.accent}>{draftCount}</Tag></span>}
           extra={
@@ -4443,6 +4475,49 @@ function PageDashboard({ quotes, drawings, setPage, 业务员 }: {
             </div>
           )}
         </Card>
+
+        {/* 待跟进催单区：已发送、按停留天数倒序 */}
+        {followUpCount > 0 && (
+          <Card title={<span>待跟进 · 已发送待客户回复 <Tag color={STATUS_COLOR['已发送']}>{followUpCount}</Tag></span>}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+              {followUpRows.map(({ q, days, sentDate, 台计 }) => {
+                const urgent = days > 5, warn = days > 2 && days <= 5
+                const uColor = urgent ? '#c0392b' : warn ? C.amber : C.textLight
+                const uText = urgent ? '急需催单' : warn ? '建议跟进' : '正常'
+                return (
+                  <div key={q.id}
+                    onClick={() => setPage({ name: 'quoteDetail', data: q })}
+                    style={{ display: 'flex', alignItems: 'center', gap: 14, background: '#fff', border: `1px solid ${C.border}`, borderLeft: `3px solid ${uColor}`, borderRadius: 9, padding: '12px 16px', cursor: 'pointer', transition: 'box-shadow .15s, transform .12s' }}
+                    onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(20,24,28,0.08)'; e.currentTarget.style.transform = 'translateY(-1px)' }}
+                    onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.transform = 'none' }}>
+                    <div style={{ textAlign: 'center', minWidth: 40 }}>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: uColor, fontFamily: "'DM Mono',monospace", lineHeight: 1.1 }}>{days}</div>
+                      <div style={{ fontSize: 10, color: C.textLight }}>天</div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, color: C.blue, fontFamily: "'DM Mono',monospace", fontSize: 14 }}>{q.订单号}</span>
+                        <span style={{ fontWeight: 600 }}>{q.客户}</span>
+                        <Tag color={uColor}>{uText}</Tag>
+                      </div>
+                      <div style={{ fontSize: 12, color: C.textLight, marginTop: 4, display: 'flex', gap: '4px 8px', flexWrap: 'wrap' }}>
+                        <span>{台计} 台</span><span>·</span>
+                        <span>{q.items.length} 行</span><span>·</span>
+                        <span>发送于 {sentDate}</span>
+                        {q.联系人 && <><span>·</span><span>{q.联系人}</span></>}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                      <Btn small variant="secondary" onClick={() => applyStatusChange(q, '已确认', { setQuotes, persist, actor: 业务员 })}>客户确认</Btn>
+                      <Btn small variant="ghost" onClick={() => applyStatusChange(q, '已失单', { setQuotes, persist, actor: 业务员 })}>标记失单</Btn>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        )}
+        </div>
 
         {/* 右栏 */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -4666,7 +4741,7 @@ export function ValveQuoteApp() {
 
   const renderPage = () => {
     switch (page.name) {
-      case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setPage={setPage} 业务员={业务员} />
+      case 'dashboard': return <PageDashboard quotes={quotes} drawings={drawings} setQuotes={setQuotes} persist={persistQuote} setPage={setPage} 业务员={业务员} />
       case 'newQuote': return <PageNewQuote params={params} quotes={quotes} paramLib={paramLib} drawings={drawings} setQuotes={setQuotes} setParams={setParams} setParamLib={setParamLib} setPage={setPage} 业务员={业务员} tenantId={auth.tenant_id} />
       case 'quotes': return <PageQuotes quotes={quotes} setQuotes={setQuotes} setPage={setPage} />
       case 'quoteDetail': {
