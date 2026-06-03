@@ -27,6 +27,24 @@ export async function POST(req: Request) {
     return e?.short ?? e?.cn ?? code
   }
 
+  // 连接 → U4（工厂编号第2位：4法兰/6焊接/1螺纹）
+  const connToU4 = (c: unknown): string => {
+    const v = String(c ?? '').toLowerCase()
+    if (/rf|rj|rtj|法兰|flang/.test(v)) return '4'
+    if (/bw|sw|焊|weld/.test(v)) return '6'
+    if (/thd|npt|螺纹/.test(v)) return '1'
+    return '4'
+  }
+  // 用归一后核心码重拼工厂编号：[类型][连接][结构][密封面]-[压力]-[口径]
+  const recompose = (item: Record<string, unknown>, codes: Record<string, string>, prefill: Record<string, string>): string | null => {
+    if (!codes.U2) return null
+    const u5 = codes.U5 || prefill.U5 || '1'
+    const u6 = codes.U6 || prefill.U6 || 'W'
+    const u7 = codes.U7 || ''
+    const u9 = codes.U9 || String(item.DN ?? '')
+    return `${codes.U2}${connToU4(item.连接)}${u5}${u6}-${u7}-${u9}`
+  }
+
   const enriched = items.map(item => {
     const norm = normalizeItem(item, units)
     // 提取无独立密封面字段 → 从材质串/件号启发式补 U6（密封面维度的精确命中）
@@ -35,7 +53,8 @@ export async function POST(req: Request) {
     const prefillHint = Object.entries(match.prefill)
       .map(([unit, code]) => ({ unit, unitName: units[unit]?.name_cn ?? unit, code, cn: codeToCn(unit, code) }))
       .filter(h => h.cn !== h.code)  // 反查不到中文名（如产品库旧码 U6=Y）→ 不展示生码
-    return { ...item, _norm: norm.codes, _normCn: norm.cn, _unmatched: norm.unmatched, _status: norm.status, _match: match, _prefillHint: prefillHint }
+    const code = recompose(item, norm.codes, match.prefill)
+    return { ...item, _norm: norm.codes, _normCn: norm.cn, _unmatched: norm.unmatched, _status: norm.status, _match: match, _prefillHint: prefillHint, _code: code }
   })
 
   return NextResponse.json({ ok: true, items: enriched, productCount: products.length })

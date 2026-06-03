@@ -1004,7 +1004,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   const [correlationId, setCorrelationId] = useState<string>('')  // 一次报价会话，串起事件闭环
   // 归一化+历史匹配结果（按 item 下标）
   type PrefillHint = { unit: string; unitName: string; code: string; cn: string }
-  type MatchInfo = { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[]; hint: PrefillHint[] }
+  type MatchInfo = { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[]; hint: PrefillHint[]; code: string | null }
   const [matchByIdx, setMatchByIdx] = useState<Record<number, MatchInfo>>({})
   const enrichItems = async (items: QuoteItem[]) => {
     try {
@@ -1012,8 +1012,8 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       const d = await res.json()
       if (!d.ok) return
       const m: Record<number, MatchInfo> = {}
-      d.items.forEach((it: { _match: Omit<MatchInfo, 'unmatched' | 'hint'>; _unmatched: string[]; _prefillHint: PrefillHint[] }, i: number) => {
-        m[i] = { ...it._match, unmatched: it._unmatched ?? [], hint: it._prefillHint ?? [] }
+      d.items.forEach((it: { _match: Omit<MatchInfo, 'unmatched' | 'hint' | 'code'>; _unmatched: string[]; _prefillHint: PrefillHint[]; _code: string | null }, i: number) => {
+        m[i] = { ...it._match, unmatched: it._unmatched ?? [], hint: it._prefillHint ?? [], code: it._code ?? null }
       })
       setMatchByIdx(m)
       // 未识别字段并入「待确认」→ 触发金色高亮 + 推断✓（复用置信度UI）
@@ -1553,7 +1553,7 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                   <Tag color={C.tag[item.类型] ?? C.blue}>{item.类型}</Tag>
                   <span style={{ fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>DN{item.DN} {item.压力}LB</span>
                   <span style={{ color: C.textDim }}>× {item.数量 || 1}</span>
-                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.blue }}>{item.工厂编号}</span>
+                  <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: C.blue }} title={matchByIdx[idx]?.code ? '由归一后核心码重拼' : '抽取原始编码'}>{matchByIdx[idx]?.code ?? item.工厂编号}</span>
                   <div style={{ flex: 1 }} />
                   {(() => {
                     const m = matchByIdx[idx]
