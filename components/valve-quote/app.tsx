@@ -1223,15 +1223,18 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
         // Step 2a：确定性合成（DB 牌1/牌2，零幻觉、零 token）
         //   有模板骨架 → 确定性模板填充；无 → 标准 15 行
         try {
+          const codes = matchByIdx[i]?.codes  // 归一码 → 历史骨架命中
           const dr = await fetch('/api/bom/derive', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(hasTpl ? { ...item, bom_template: tpl!.bom_template } : { 主体: item.主体, 件号: item.件号, DN: item.DN }),
+            body: JSON.stringify(hasTpl
+              ? { ...item, codes, bom_template: tpl!.bom_template }
+              : { 主体: item.主体, 件号: item.件号, DN: item.DN, 驱动: item.驱动, codes }),
           })
           const d = await dr.json()
           if (d.ok && d.bom?.length) {
             results.push({
               item, bom: d.bom, 牌1: d.牌1, 牌2: d.牌2,
-              来源: hasTpl ? 'template' : 'rule',
+              来源: d.mode === 'history' ? 'rule' : hasTpl ? 'template' : 'rule',
               drawing_id: tpl?.id, drawing_name: tpl?.name,
             })
             setProgress({ pct: Math.round(((i + 1) / total) * 90), label: `✓ ${label}（${hasTpl ? '模板·确定性' : '规则合成'}）` })
