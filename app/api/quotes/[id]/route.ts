@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getTenantId } from '@/lib/auth'
+import { projectQuoteItems } from '@/lib/project-quote-items'
 
 // PUT /api/quotes/:id —— 保存报价单编辑（整体覆盖 data）
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -16,6 +17,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     .eq('id', id)
     .eq('tenant_id', tenantId)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  // 投影明细行（失败不阻塞主保存）
+  await projectQuoteItems(supabase, { ...data, id }, tenantId).catch(() => {})
   return NextResponse.json({ ok: true })
 }
 

@@ -1378,6 +1378,9 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
     }
     if (pRes.error) console.warn('[handleSave] params upsert error:', pRes.error)
 
+    // 投影明细行到 quote_items（查询优化副本；失败不阻塞）
+    fetch(`/api/quotes/${newQuote.id}/project`, { method: 'POST' }).catch(() => {})
+
     // 事件：报价单已确认（闭环终点；后续 QuoteWon/Lost 提供定价真值）
     emitEvent({
       event_type: 'quote_confirmed', actor: 业务员 || '业务员',

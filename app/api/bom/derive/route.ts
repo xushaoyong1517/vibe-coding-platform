@@ -67,22 +67,25 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: derived.bom.length > 0, ...derived, mode: 'standard' })
 }
 
-// 在本租户历史报价里找骨架：类型U2 + 结构U5 + 驱动 一致、且该明细行已有 BOM
+// 在本租户历史明细里找骨架：类型U2(索引) + 结构U5 + 驱动 一致、且该行已有 BOM。
+// 查 quote_items 投影表（codes 建索引），取代旧版"内存扫 300 块 quotes JSON"。
 async function findHistorySkeleton(tenantId: string, codes: Record<string, string>, drive: string): Promise<SkeletonPart[] | null> {
-  const { data } = await supabase.from('quotes').select('data').eq('tenant_id', tenantId).limit(300)
-  for (const row of data ?? []) {
-    const q = row.data as { items?: { codes?: Record<string, string>; 驱动?: string }[]; bomData?: { bom?: SkeletonPart[] }[] }
-    const items = q.items ?? []
-    for (let i = 0; i < items.length; i++) {
-      const c = items[i].codes
-      if (!c?.U2) continue
-      const sameType = c.U2 === codes.U2
-      const sameStruct = (c.U5 ?? '') === (codes.U5 ?? '')
-      const sameDrive = (items[i].驱动 ?? '') === drive
-      const bom = q.bomData?.[i]?.bom
-      if (sameType && sameStruct && sameDrive && bom?.length) {
-        return bom.map(b => ({ 零件: b.零件 }))  // 只取骨架(零件名)，材质规则重填
-      }
+  const { data, error } = await supabase
+    .from('quote_items')
+    .select('data, bom, codes')
+    .eq('tenant_id', tenantId)
+    .eq('codes->>U2', codes.U2)
+    .not('bom', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(50)
+  if (error || !data) return null   // 表未建/无命中 → 回落小样图/标准骨架
+  for (const row of data) {
+    const c = row.codes as Record<string, string> | null
+    const sameStruct = (c?.U5 ?? '') === (codes.U5 ?? '')
+    const sameDrive = ((row.data as { 驱动?: string } | null)?.驱动 ?? '') === drive
+    const bom = (row.bom as { bom?: SkeletonPart[] } | null)?.bom
+    if (sameStruct && sameDrive && bom?.length) {
+      return bom.map(b => ({ 零件: b.零件 }))  // 只取骨架(零件名)，材质规则重填
     }
   }
   return null
