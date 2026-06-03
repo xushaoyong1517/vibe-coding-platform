@@ -42,10 +42,11 @@ const ALIASES: Record<string, Record<string, string[]>> = {
     A20: ['alloy20', 'alloy 20', 'n08020', '20号合金'],
     M400: ['monel', '蒙乃尔', 'monel400', 'n04400'],
   },
-  U6: { // 密封面 ≈ 内件/件号代号
+  U6: { // 密封面 ≈ 内件/件号代号（'Y' 为产品库主力码：硬面堆焊）
+    Y: ['stl', 'stlt', 'hf', '硬面', '堆焊', 'stl堆焊', '硬质合金', 'stellite', '司太立', '哈斯特'],
+    Y1: ['单堆焊', '单层堆焊', '硬质合金单堆焊'],
+    Y2: ['双堆焊', '全堆焊', '双层堆焊'],
     W: ['本体', '整体', '同本体'],
-    Y1: ['stl单堆焊', '单堆焊', '硬质合金单堆焊'],
-    Y2: ['stl', 'stlt', 'hf', '硬面', '堆焊', 'stl堆焊', '双堆焊', '哈斯特', 'stellite', '司太立'],
     H: ['铁基', '铁基不锈钢', '13cr', 'cr13', '410'],
     M: ['蒙乃尔密封', 'monel'],
     F: ['ptfe', '聚四氟', '四氟'],
@@ -69,6 +70,12 @@ const ALIASES: Record<string, Record<string, string[]>> = {
   },
 }
 
+// 产品库里存在、但 valve-code-tables 字典缺失的码 —— 补齐（对齐历史数据）
+const EXTRA_ENTRIES: Record<string, { code: string; cn: string; en?: string; aliases: string[] }[]> = {
+  // U6='Y'：产品库主力(187条)，硬面堆焊；字典原只有 Y1/Y2
+  U6: [{ code: 'Y', cn: '硬面堆焊(STL)', en: 'Hardfacing (Stellite)', aliases: ['stl', 'stlt', 'hf', '硬面', '堆焊', 'stl堆焊', '硬质合金', 'stellite', '司太立'] }],
+}
+
 // U9 口径：从 cn(DN100) / en(NPS 4") 自动派生别名
 function deriveDnAliases(cn: string, en: string): string[] {
   const a: string[] = []
@@ -81,7 +88,7 @@ function deriveDnAliases(cn: string, en: string): string[] {
 
 export interface ParamUnitSeed {
   unit: string; name_cn: string; name_en: string; tier: string; is_core6: boolean
-  entries: { code: string; cn: string; en: string; note?: string; aliases: string[] }[]
+  entries: { code: string; cn: string; en?: string; note?: string; aliases: string[] }[]
 }
 
 export function buildGlobalParamUnits(): ParamUnitSeed[] {
@@ -91,11 +98,14 @@ export function buildGlobalParamUnits(): ParamUnitSeed[] {
     name_en: t.name_en,
     tier: t.tier,
     is_core6: CORE6.has(t.unit),
-    entries: t.entries.map(e => {
-      const manual = ALIASES[t.unit]?.[e.code] ?? []
-      const auto = t.unit === 'U9' ? deriveDnAliases(e.cn, e.en) : []
-      const aliases = [...new Set([...manual, ...auto])]
-      return { code: e.code, cn: e.cn, en: e.en, ...(e.note ? { note: e.note } : {}), aliases }
-    }),
+    entries: [
+      ...t.entries.map(e => {
+        const manual = ALIASES[t.unit]?.[e.code] ?? []
+        const auto = t.unit === 'U9' ? deriveDnAliases(e.cn, e.en) : []
+        const aliases = [...new Set([...manual, ...auto])]
+        return { code: e.code, cn: e.cn, en: e.en, ...(e.note ? { note: e.note } : {}), aliases }
+      }),
+      ...(EXTRA_ENTRIES[t.unit] ?? []),  // 补齐产品库存在但字典缺失的码
+    ],
   }))
 }
