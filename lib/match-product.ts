@@ -48,35 +48,33 @@ export function matchProduct(codes: Record<string, string>, products: ProductRow
   const empty: MatchResult = { level: 'none', count: 0, rows: 0, topCode: null, filledFields: [], prefill: {} }
   if (!CORE4.every(present)) return empty
 
-  const hits4 = products.filter(p => CORE4.every(k => eq(p, codes, k)))
-
-  if (hits4.length === 0) {
-    // 兜底：核心4无命中，按 类型+阀体 给常见 压力/口径/结构/密封面 建议（不论是否已填，作参考）
-    const loose = products.filter(p => eq(p, codes, 'U2') && eq(p, codes, 'U8'))
-    if (loose.length === 0) return empty
-    const prefill: Record<string, string> = {}
-    for (const k of ['U7', 'U9', 'U5', 'U6']) { const m = weightedMode(loose, k); if (m) prefill[k] = m }
-    return { level: 'none', count: sumOrders(loose), rows: loose.length, topCode: topRow(loose)?.full_code ?? null, filledFields: Object.keys(prefill), prefill }
-  }
-
-  // 核心6全给 → 试精确命中（全6一致的子集）
+  const present6 = CORE6.filter(present)               // 在场的核心字段（≥核心4）
   const allCore6Present = CORE6.every(present)
-  if (allCore6Present) {
-    const hits6 = hits4.filter(p => CORE6.every(k => eq(p, codes, k)))
-    if (hits6.length > 0) {
-      return { level: 'exact', count: sumOrders(hits6), rows: hits6.length, topCode: topRow(hits6)?.full_code ?? null, filledFields: [], prefill: {} }
+
+  // 用"在场的核心6"全部收窄
+  const hits = products.filter(p => present6.every(k => eq(p, codes, k)))
+  if (hits.length > 0) {
+    const prefill: Record<string, string> = {}
+    for (const k of CORE6) if (!present(k)) { const m = weightedMode(hits, k); if (m) prefill[k] = m }
+    return {
+      level: allCore6Present ? 'exact' : 'similar',
+      count: sumOrders(hits), rows: hits.length, topCode: topRow(hits)?.full_code ?? null,
+      filledFields: Object.keys(prefill), prefill,
     }
   }
 
-  // 相似：核心4命中，U5/U6 等缺失项由历史补缺
-  const prefill: Record<string, string> = {}
-  for (const k of CORE6) if (!present(k)) { const m = weightedMode(hits4, k); if (m) prefill[k] = m }
-  return {
-    level: 'similar',
-    count: sumOrders(hits4),
-    rows: hits4.length,
-    topCode: topRow(hits4)?.full_code ?? null,
-    filledFields: Object.keys(prefill),
-    prefill,
+  // 收窄无命中 → 退到核心4
+  const hits4 = products.filter(p => CORE4.every(k => eq(p, codes, k)))
+  if (hits4.length > 0) {
+    const prefill: Record<string, string> = {}
+    for (const k of ['U5', 'U6'] as const) { const m = weightedMode(hits4, k); if (m) prefill[k] = m }
+    return { level: 'similar', count: sumOrders(hits4), rows: hits4.length, topCode: topRow(hits4)?.full_code ?? null, filledFields: Object.keys(prefill), prefill }
   }
+
+  // 核心4也无命中 → 按 类型+阀体 给常见值参考
+  const loose = products.filter(p => eq(p, codes, 'U2') && eq(p, codes, 'U8'))
+  if (loose.length === 0) return empty
+  const prefill: Record<string, string> = {}
+  for (const k of ['U7', 'U9', 'U5', 'U6']) { const m = weightedMode(loose, k); if (m) prefill[k] = m }
+  return { level: 'none', count: sumOrders(loose), rows: loose.length, topCode: topRow(loose)?.full_code ?? null, filledFields: Object.keys(prefill), prefill }
 }

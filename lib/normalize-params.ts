@@ -28,6 +28,24 @@ export interface NormalizedItem {
   unmatched: string[]                   // 未归一化（待确认）的字段
 }
 
+/**
+ * 从材质串/件号启发式推导密封面 U6（提取通常无独立密封面字段）。
+ * 优先看阀座/阀瓣材质，再用件号兜底。返回 U6 码或 null。
+ */
+export function deriveU6(item: Record<string, unknown>): string | null {
+  const blob = `${item.阀座 ?? ''} ${item.阀瓣阀闸 ?? ''}`.toLowerCase()
+  if (/stl|硬面|堆焊|\bhf\b|stellite|司太立/.test(blob)) return 'Y'   // 硬面堆焊（产品库主力）
+  if (/monel|蒙乃尔/.test(blob)) return 'M'
+  if (/13cr|cr13|f6a/.test(blob)) return 'H'                         // 13Cr 铁基
+  if (/本体|同本体/.test(blob)) return 'W'
+  // 件号兜底
+  const j = String(item.件号 ?? '').replace(/#/g, '').trim()
+  if (['5', '8', '15', '16', '11', '12', '14', '18'].includes(j)) return 'Y'  // 堆焊类
+  if (['1', '4', '7'].includes(j)) return 'H'                                  // 13Cr 类
+  if (['2', '3', '10'].includes(j)) return 'W'                                 // 本体类
+  return null
+}
+
 /** 归一化一条提取参数（按 FIELD_TO_UNIT 映射的字段） */
 export function normalizeItem(item: Record<string, unknown>, units: ParamUnits, mapping: Record<string, string> = FIELD_TO_UNIT): NormalizedItem {
   const codes: Record<string, string> = {}

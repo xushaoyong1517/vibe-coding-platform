@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { getTenantId } from '@/lib/auth'
 import { loadParamUnits } from '@/lib/load-param-units'
-import { normalizeItem } from '@/lib/normalize-params'
+import { normalizeItem, deriveU6 } from '@/lib/normalize-params'
 import { matchProduct, type ProductRow } from '@/lib/match-product'
 
 // POST /api/params/enrich  { items: [...提取后的参数] }
@@ -27,6 +27,8 @@ export async function POST(req: Request) {
 
   const enriched = items.map(item => {
     const norm = normalizeItem(item, units)
+    // 提取无独立密封面字段 → 从材质串/件号启发式补 U6（密封面维度的精确命中）
+    if (!norm.codes.U6) { const u6 = deriveU6(item); if (u6) norm.codes.U6 = u6 }
     const match = matchProduct(norm.codes, products)
     const prefillHint = Object.entries(match.prefill)
       .map(([unit, code]) => ({ unit, unitName: units[unit]?.name_cn ?? unit, code, cn: codeToCn(unit, code) }))
