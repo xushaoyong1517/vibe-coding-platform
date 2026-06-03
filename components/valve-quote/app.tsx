@@ -4366,7 +4366,8 @@ const NAV = [
   { id: 'quoteItems',   icon: '≣',  label: '报价明细',   group: 'main' },
   { id: 'newQuote',     icon: '＋', label: '新建报价',   group: 'action' },
   { id: 'drawings',     icon: '📐', label: '小样图库',   group: 'data' },
-  { id: 'valveCodeRef', icon: '⊟',  label: '阀门参数库', group: 'data' },
+  // 阀门参数库(标准码表母本)隐藏：参数词典已是其超集(同码表+别名/短名)，作唯一入口
+  // { id: 'valveCodeRef', icon: '⊟',  label: '阀门参数库', group: 'data' },
   { id: 'params',       icon: '⬡',  label: '阀门产品库', group: 'data' },
   { id: 'rules',        icon: '☶',  label: '规则库',     group: 'data' },
   { id: 'paramUnits',   icon: '❖',  label: '参数词典',   group: 'data' },
