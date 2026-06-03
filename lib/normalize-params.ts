@@ -1,6 +1,6 @@
 // 参数归一化（权威，查阀门参数库词典）。纯函数 —— units 由调用方传入，可单测。
 
-export interface ParamEntry { code: string; cn: string; en?: string; note?: string; aliases: string[] }
+export interface ParamEntry { code: string; cn: string; short?: string; en?: string; note?: string; aliases: string[] }
 export interface ParamUnit { unit: string; name_cn: string; tier: string; is_core6: boolean; entries: ParamEntry[] }
 export type ParamUnits = Record<string, ParamUnit>
 

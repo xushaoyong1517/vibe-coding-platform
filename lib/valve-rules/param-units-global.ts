@@ -70,6 +70,14 @@ const ALIASES: Record<string, Record<string, string[]>> = {
   },
 }
 
+// 短规范名：字典 cn 多为长描述（"A105/WCB 碳钢"），short 给一个可写回/展示的短名
+const SHORT: Record<string, Record<string, string>> = {
+  U5: { '0': '弹性楔', '1': '实心楔', '2': '双闸板', '3': '平板', '4': '平行双板', '5': '暗杆楔', '6': '暗杆双楔', '7': '暗杆平板' },
+  U6: { Y: '硬面座', W: '本体', H: '13Cr', Y1: '单堆STL', Y2: '双堆STL', M: 'Monel', F: 'PTFE', X: '橡胶' },
+  U8: { C: 'WCB', C2: 'LCB', V3: 'WC6', V4: 'WC9', P: 'CF8', R: 'CF8M', L: 'CF3M', L1: 'CF3', P2: 'CF8C' },
+  U2: { Z: '闸阀', J: '截止阀', H: '止回阀', Q: '球阀', D: '蝶阀' },
+}
+
 // 产品库里存在、但 valve-code-tables 字典缺失的码 —— 补齐（对齐历史数据）
 const EXTRA_ENTRIES: Record<string, { code: string; cn: string; en?: string; aliases: string[] }[]> = {
   // U6='Y'：产品库主力(187条)，硬面堆焊；字典原只有 Y1/Y2
@@ -88,7 +96,7 @@ function deriveDnAliases(cn: string, en: string): string[] {
 
 export interface ParamUnitSeed {
   unit: string; name_cn: string; name_en: string; tier: string; is_core6: boolean
-  entries: { code: string; cn: string; en?: string; note?: string; aliases: string[] }[]
+  entries: { code: string; cn: string; short?: string; en?: string; note?: string; aliases: string[] }[]
 }
 
 export function buildGlobalParamUnits(): ParamUnitSeed[] {
@@ -103,9 +111,10 @@ export function buildGlobalParamUnits(): ParamUnitSeed[] {
         const manual = ALIASES[t.unit]?.[e.code] ?? []
         const auto = t.unit === 'U9' ? deriveDnAliases(e.cn, e.en) : []
         const aliases = [...new Set([...manual, ...auto])]
-        return { code: e.code, cn: e.cn, en: e.en, ...(e.note ? { note: e.note } : {}), aliases }
+        const short = SHORT[t.unit]?.[e.code]
+        return { code: e.code, cn: e.cn, ...(short ? { short } : {}), en: e.en, ...(e.note ? { note: e.note } : {}), aliases }
       }),
-      ...(EXTRA_ENTRIES[t.unit] ?? []),  // 补齐产品库存在但字典缺失的码
+      ...(EXTRA_ENTRIES[t.unit] ?? []).map(e => ({ ...e, ...(SHORT[t.unit]?.[e.code] ? { short: SHORT[t.unit][e.code] } : {}) })),  // 补齐产品库存在但字典缺失的码
     ],
   }))
 }

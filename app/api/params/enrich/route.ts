@@ -21,9 +21,11 @@ export async function POST(req: Request) {
   if (prodRes.error) return NextResponse.json({ error: prodRes.error.message }, { status: 500 })
   const products = (prodRes.data ?? []) as unknown as ProductRow[]
 
-  // 码 → 中文名（反查字典，用于"历史常见"提示）
-  const codeToCn = (unit: string, code: string): string =>
-    units[unit]?.entries.find(e => e.code === code)?.cn ?? code
+  // 码 → 短规范名（优先 short，回退 cn），用于"历史常见"提示，避免长描述串味
+  const codeToCn = (unit: string, code: string): string => {
+    const e = units[unit]?.entries.find(e => e.code === code)
+    return e?.short ?? e?.cn ?? code
+  }
 
   const enriched = items.map(item => {
     const norm = normalizeItem(item, units)

@@ -507,6 +507,7 @@ type PageState =
   | { name: 'bomList' }
   | { name: 'drawings' }
   | { name: 'rules' }
+  | { name: 'paramUnits' }
   | { name: 'learning' }
   | { name: 'dataInit' }
 
@@ -3060,6 +3061,116 @@ function PageLearning() {
   )
 }
 
+// ════════════════════════════════════════════════════
+// PAGE: 参数词典（阀门参数库 19 单元 · 租户可覆盖）
+// ════════════════════════════════════════════════════
+
+interface LiveParamUnit {
+  unit: string; name_cn: string; tier: string; is_core6: boolean
+  entries: { code: string; cn: string; short?: string; aliases: string[] }[]
+}
+
+function PageParamUnits() {
+  const [units, setUnits] = useState<LiveParamUnit[]>([])
+  const [tenant, setTenant] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [openUnit, setOpenUnit] = useState<string | null>(null)
+  const fileRef = React.useRef<HTMLInputElement>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null)
+    try {
+      const res = await fetch('/api/param-units')
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || '加载失败')
+      setUnits(d.units ?? []); setTenant(d.tenant_id ?? '')
+    } catch (e) { setErr((e as Error).message) }
+    setLoading(false)
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const onUpload = async (file: File) => {
+    setImporting(true); setMsg(null); setErr(null)
+    try {
+      const json = JSON.parse(await file.text())
+      const unitsPayload = Array.isArray(json) ? json : json.units
+      const res = await fetch('/api/param-units/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ units: unitsPayload }),
+      })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.error || '导入失败')
+      setMsg(`✅ 已覆盖单元：${(d.overridden ?? []).join(', ')}`)
+      await load()
+    } catch (e) { setErr('导入失败：' + (e as Error).message) }
+    setImporting(false)
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  const TIER_CN: Record<string, string> = { core: '核心', structure: '结构', material: '材质', addon: '附加' }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <Card
+        title="参数词典（19 单元 · 来自数据库）"
+        extra={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: C.textDim }}>工厂：{tenant}</span>
+            <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: 'none' }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f) }} />
+            <Btn variant="secondary" small disabled={importing} onClick={() => fileRef.current?.click()}>{importing ? '导入中…' : '上传覆盖 JSON'}</Btn>
+            <Btn variant="ghost" small onClick={load}>刷新</Btn>
+          </div>
+        }
+      >
+        <div style={{ fontSize: 12, color: C.textDim }}>
+          每个单元 U1–U19 的取值码 + 别名（归一化的权威来源）。<b>GLOBAL 基线 + 本租户覆盖</b>合并显示。上传 JSON（<code>{'[{unit,entries:[{code,cn,short,aliases}]}]'}</code>）即覆盖对应单元、即时生效。
+        </div>
+        {err && <div style={{ marginTop: 8, fontSize: 12, color: '#c0392b' }}>{err}</div>}
+        {msg && <div style={{ marginTop: 8, fontSize: 12, color: C.green }}>{msg}</div>}
+        {loading && <div style={{ marginTop: 8, fontSize: 12, color: C.textLight }}>加载中…</div>}
+      </Card>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {units.map(u => {
+          const open = openUnit === u.unit
+          return (
+            <Card key={u.unit}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => setOpenUnit(open ? null : u.unit)}>
+                <span style={{ fontFamily: "'DM Mono',monospace", fontWeight: 700, color: C.blue, width: 36 }}>{u.unit}</span>
+                <span style={{ fontWeight: 700 }}>{u.name_cn}</span>
+                <Tag color={u.is_core6 ? C.accent : C.textLight}>{u.is_core6 ? '核心6' : TIER_CN[u.tier] ?? u.tier}</Tag>
+                <span style={{ fontSize: 12, color: C.textLight }}>{u.entries.length} 个取值</span>
+                <div style={{ flex: 1 }} />
+                <span style={{ color: C.textLight }}>{open ? '▾' : '▸'}</span>
+              </div>
+              {open && (
+                <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                  <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
+                    <thead><tr>{['码', '名称', '短名', '别名'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11 }}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {u.entries.map(e => (
+                        <tr key={e.code} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
+                          <td style={{ padding: '5px 8px', fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>{e.code}</td>
+                          <td style={{ padding: '5px 8px' }}>{e.cn}</td>
+                          <td style={{ padding: '5px 8px', color: C.accent }}>{e.short ?? ''}</td>
+                          <td style={{ padding: '5px 8px', color: C.textDim, fontSize: 11 }}>{(e.aliases ?? []).join(' / ')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Card>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function PageRules() {
   // 租户由会话决定（服务端 getTenantId），前端不再传 factory_id；工厂名从响应回显
   const [rs, setRs] = useState<LiveRuleset | null>(null)
@@ -4310,6 +4421,7 @@ const NAV = [
   { id: 'valveCodeRef', icon: '⊟', label: '阀门参数库', group: '数据管理' },
   { id: 'params',      icon: '⬡', label: '阀门产品库', group: '数据管理' },
   { id: 'rules',       icon: '☶', label: '规则库',     group: '数据管理' },
+  { id: 'paramUnits',  icon: '❖', label: '参数词典',   group: '数据管理' },
   // { id: 'learning',    icon: '✦', label: '学习看板',   group: '数据管理' },  // 暂时隐藏
   // { id: 'valveParts',  icon: '⊞', label: '零件库',     group: '数据管理' },  // 暂时隐藏
   // { id: 'bomList',     icon: '⊟', label: '物料清单',   group: '数据管理' },  // 暂时隐藏
@@ -4483,6 +4595,7 @@ export function ValveQuoteApp() {
       case 'bomList': return <PageBomList />
       case 'valveCodeRef': return <PageValveCodeRef />
       case 'rules': return <PageRules />
+      case 'paramUnits': return <PageParamUnits />
       case 'learning': return <PageLearning />
       case 'dataInit': return <PageDataInit params={params} setParams={setParams} paramLib={paramLib} setParamLib={setParamLib} />
     }
