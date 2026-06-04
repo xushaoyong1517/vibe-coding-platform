@@ -3034,8 +3034,8 @@ function PageParamUnits() {
                   <table style={{ borderCollapse: 'collapse', fontSize: 12, width: '100%' }}>
                     <thead><tr>{['码', '名称', '短名', '别名'].map(h => <th key={h} style={{ textAlign: 'left', padding: '6px 8px', borderBottom: `2px solid ${C.border}`, color: C.textDim, fontSize: 11 }}>{h}</th>)}</tr></thead>
                     <tbody>
-                      {u.entries.map(e => (
-                        <tr key={e.code} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
+                      {u.entries.map((e, ei) => (
+                        <tr key={`${e.code}-${ei}`} style={{ borderBottom: `1px solid ${C.borderLight}` }}>
                           <td style={{ padding: '5px 8px', fontFamily: "'DM Mono',monospace", fontWeight: 600 }}>{e.code}</td>
                           <td style={{ padding: '5px 8px' }}>{e.cn}</td>
                           <td style={{ padding: '5px 8px', color: C.accent }}>{e.short ?? ''}</td>
