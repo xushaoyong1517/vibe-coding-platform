@@ -1,7 +1,6 @@
 'use client'
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-tables'
 import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
@@ -1188,17 +1187,18 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       }
     }
 
-    // 持久化到 Supabase
+    // 持久化（经 API 路由 → 服务端直连数据库）
     const [qRes, pRes] = await Promise.all([
-      supabase.from('quotes').insert({ id: newQuote.id, salesperson: 业务员, data: newQuote, status: newQuote.状态, tenant_id: tenantId }),
-      supabase.from('params').upsert(upsertRows.map(p => ({ id: p.id, data: p, updated_at: new Date().toISOString(), tenant_id: tenantId }))),
+      fetch('/api/quotes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: newQuote.id, salesperson: 业务员, data: newQuote, status: newQuote.状态 }) }),
+      fetch('/api/params', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(upsertRows.map(p => ({ id: p.id, data: p }))) }),
     ])
-    if (qRes.error) {
-      console.error('[handleSave] quotes insert error:', qRes.error)
-      setError('报价单保存失败: ' + qRes.error.message)
+    if (!qRes.ok) {
+      const err = await qRes.json().catch(() => ({}))
+      console.error('[handleSave] quotes insert error:', err)
+      setError('报价单保存失败: ' + (err.error || qRes.statusText))
       return
     }
-    if (pRes.error) console.warn('[handleSave] params upsert error:', pRes.error)
+    if (!pRes.ok) console.warn('[handleSave] params upsert failed:', pRes.statusText)
 
     // 投影明细行到 quote_items（查询优化副本；失败不阻塞）
     fetch(`/api/quotes/${newQuote.id}/project`, { method: 'POST' }).catch(() => {})
@@ -4483,19 +4483,18 @@ export function ValveQuoteApp() {
       .finally(() => setAuthChecked(true))
   }, [])
 
-  // 从 Supabase 加载数据（按租户隔离；登录后才加载）
+  // 加载数据（经 API 路由按会话租户隔离；登录后才加载）
   useEffect(() => {
     if (!auth) return
-    const tenantId = auth.tenant_id
     const load = async () => {
-      const [qRes, pRes, dRes] = await Promise.all([
-        supabase.from('quotes').select('id, data').eq('tenant_id', tenantId).order('created_at', { ascending: false }),
-        supabase.from('params').select('id, data').eq('tenant_id', tenantId),
+      const [qData, pData, dRes] = await Promise.all([
+        fetch('/api/quotes').then(r => r.ok ? r.json() : []),
+        fetch('/api/params').then(r => r.ok ? r.json() : []),
         fetch('/api/drawings').then(r => r.json()),
       ])
-      if (qRes.data) setQuotes(qRes.data.map((r: { id: string; data: Quote }) => r.data))
-      if (pRes.data && pRes.data.length > 0) {
-        const ps = pRes.data.map((r: { id: string; data: Param }) => r.data)
+      if (Array.isArray(qData)) setQuotes(qData.map((r: { id: string; data: Quote }) => r.data))
+      if (Array.isArray(pData) && pData.length > 0) {
+        const ps = pData.map((r: { id: string; data: Param }) => r.data)
         setParams(ps)
         setParamLib(prev => ({ ...initParamLib(ps), ...prev }))
       } else {
