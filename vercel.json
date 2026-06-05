@@ -1,0 +1,6 @@
+{
+  "crons": [
+    { "path": "/api/blacklake/cron?mode=full", "schedule": "0 16 * * *" },
+    { "path": "/api/blacklake/cron?mode=incremental", "schedule": "0 * * * *" }
+  ]
+}

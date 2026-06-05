@@ -7,6 +7,8 @@ import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-t
 import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
 import { QUOTE_STATUSES, STATUS_COLOR, STATUS_META, nextStates, transitionBlockReason } from '@/lib/quote-status'
 import { matchDrawing } from '@/lib/match-drawing'
+import { PageKitting } from './kitting-workbench'
+import { PageDataSync } from './data-sync'
 
 // 事件流：不可变事实日志，fire-and-forget，绝不阻塞主流程
 function emitEvent(ev: EventInput) {
@@ -353,6 +355,7 @@ type PageState =
   | { name: 'quoteDetail'; data: Quote }
   | { name: 'quoteLine'; data: { quoteId: string; lineIdx: number } }
   | { name: 'quoteItems' }
+  | { name: 'kitting' }
   | { name: 'params' }
   | { name: 'productDetail'; data: ValveProduct }
   | { name: 'valveCodeRef' }
@@ -362,6 +365,7 @@ type PageState =
   | { name: 'paramUnits' }
   | { name: 'learning' }
   | { name: 'dataInit' }
+  | { name: 'dataSync' }
 
 // ════════════════════════════════════════════════════
 // VALIDATION
@@ -4364,6 +4368,7 @@ const NAV = [
   { id: 'dashboard',    icon: '🏠', label: '工作台',     group: 'main' },
   { id: 'quotes',       icon: '📄', label: '报价单',     group: 'main' },
   { id: 'quoteItems',   icon: '≣',  label: '报价明细',   group: 'main' },
+  { id: 'kitting',      icon: '◧',  label: '齐套分析',   group: 'main' },
   { id: 'newQuote',     icon: '＋', label: '新建报价',   group: 'action' },
   { id: 'drawings',     icon: '📐', label: '小样图库',   group: 'data' },
   // 阀门参数库(标准码表母本)隐藏：参数词典已是其超集(同码表+别名/短名)，作唯一入口
@@ -4372,6 +4377,7 @@ const NAV = [
   { id: 'rules',        icon: '☶',  label: '规则库',     group: 'data' },
   { id: 'paramUnits',   icon: '❖',  label: '参数词典',   group: 'data' },
   { id: 'dataInit',     icon: '⊕',  label: '初始化',     group: 'data' },
+  { id: 'dataSync',     icon: '⇅',  label: '数据同步',   group: 'data' },
 ]
 
 // ════════════════════════════════════════════════════
@@ -4536,6 +4542,7 @@ export function ValveQuoteApp() {
         return <PageQuoteLineDetail quote={q} lineIdx={page.data.lineIdx} setQuotes={setQuotes} persist={persistQuote} setPage={setPage} />
       }
       case 'quoteItems': return <PageQuoteItems quotes={quotes} drawings={drawings} setPage={setPage} />
+      case 'kitting': return <PageKitting />
       case 'params': return <PageParams params={params} setPage={setPage} />
       case 'productDetail': return <PageProductDetail product={page.data} goBack={() => setPage({ name: 'params' })} />
       case 'drawings':   return <PageDrawings drawings={drawings} setDrawings={setDrawings} />
@@ -4545,6 +4552,7 @@ export function ValveQuoteApp() {
       case 'paramUnits': return <PageParamUnits />
       case 'learning': return <PageLearning />
       case 'dataInit': return <PageDataInit params={params} setParams={setParams} paramLib={paramLib} setParamLib={setParamLib} />
+      case 'dataSync': return <PageDataSync />
     }
   }
 
@@ -4687,7 +4695,7 @@ export function ValveQuoteApp() {
       <div className="vq-scroll" style={{ flex: 1, overflow: 'auto', padding: '20px 26px', minHeight: 0 }}>
         {(() => {
           // 详情页自带标题，不显示外层 h1
-          const noHeader = ['quoteDetail', 'quoteLine', 'productDetail', 'dashboard'].includes(page.name)
+          const noHeader = ['quoteDetail', 'quoteLine', 'productDetail', 'dashboard', 'kitting', 'dataSync'].includes(page.name)
           const label = NAV.find(n => n.id === page.name)?.label ?? ''
           return !noHeader && label ? (
             <div style={{ marginBottom: 14 }}>
