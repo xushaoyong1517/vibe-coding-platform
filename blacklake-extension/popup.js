@@ -21,4 +21,5 @@ const run = mode => async () => {
 $('full').onclick = run('full'); $('inc').onclick = run('incremental')
 $('opt').onclick = () => chrome.runtime.openOptionsPage()
 $('browse').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('browse.html') })
+$('kitting').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('kitting.html') })
 refresh()

@@ -1,0 +1,33 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>齐套分析</title><style>
+body{font:13px/1.5 -apple-system,"Microsoft YaHei",sans-serif;margin:0;padding:16px;color:#222;background:#f6f6f1}
+h1{font-size:18px;margin:0 0 12px}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+.kpi{background:#fff;border:1px solid #e5e3da;border-radius:11px;padding:11px 13px;position:relative;overflow:hidden}
+.kpi i{position:absolute;left:0;top:0;bottom:0;width:4px}
+.kpi b{font:600 24px/1 ui-monospace,monospace}.kpi div{font-size:11px;color:#777;margin-top:6px}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tab{padding:7px 14px;border:1px solid #ddd;border-radius:9px;background:#fff;cursor:pointer;font-weight:700}
+.tab.on{background:#0e6b62;color:#fff;border-color:#0e6b62}
+.bar{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center}
+input{flex:1;min-width:160px;padding:7px 10px;border:1px solid #ccc;border-radius:8px;font:inherit}
+.chip{padding:5px 11px;border:1px solid #ddd;border-radius:20px;background:#fff;cursor:pointer;font-size:12px}
+.chip.on{background:#0e6b62;color:#fff;border-color:#0e6b62}
+#info{font-size:12px;color:#888;margin-bottom:8px}
+.wrap{background:#fff;border:1px solid #eee;border-radius:10px;overflow:auto;max-height:calc(100vh-260px)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border-bottom:1px solid #f0f0f0;padding:7px 11px;text-align:left;white-space:nowrap}
+th{position:sticky;top:0;background:#faf9f4;font-weight:700;color:#555}
+td.num{text-align:right;font-family:ui-monospace,monospace}
+.badge{font-weight:700;font-size:11px;padding:2px 9px;border-radius:6px}
+.b-ok{background:#e6f1ea;color:#2a7a4b}.b-short{background:#f7e0dc;color:#c0392b}.b-nobom{background:#ececea;color:#777}
+.bar2{height:7px;border-radius:4px;background:#ececea;overflow:hidden;width:70px;display:inline-block;vertical-align:middle}
+.bar2 i{display:block;height:100%}
+small{color:#999}
+</style></head><body>
+<h1>齐套分析 <small style="font-size:12px">基于本地同步的 销售订单 / 物料清单(BOM) / 产品库存</small></h1>
+<div class="kpis" id="kpis"></div>
+<div class="tabs"><div class="tab on" data-t="orders">按订单齐套</div><div class="tab" data-t="shortage">缺料采购</div></div>
+<div class="bar" id="bar"></div>
+<div id="info"></div>
+<div class="wrap"><table id="tbl"></table></div>
+<script src="kitting.js"></script></body></html>

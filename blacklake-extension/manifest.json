@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "黑湖小工单 本地同步",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "拉取黑湖小工单 5 张数据到本地 SQLite(sql.js)；复用网页登录态(不挤掉网页)、定时增量同步、SQL 数据浏览。",
   "permissions": ["storage", "alarms", "webRequest"],
   "host_permissions": ["https://liteweb.blacklake.cn/*"],
