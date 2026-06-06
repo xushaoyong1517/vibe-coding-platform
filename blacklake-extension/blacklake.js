@@ -1,8 +1,7 @@
 // 黑湖小工单对接（浏览器扩展 service worker 内运行；跨域靠 manifest host_permissions 放行）。
-import { sha3_224 } from './sha3.js'
 
 let CFG = { baseUrl: 'https://liteweb.blacklake.cn', loginType: 1, factoryCode: '', username: '', phone: '', password: '' }
-export function setConfig(c) { CFG = { ...CFG, ...c } }
+function setConfig(c) { CFG = { ...CFG, ...c } }
 
 const OK = '01000000'
 let token = null, loginInflight = null
@@ -76,7 +75,7 @@ async function pullStock(pairs) {
 }
 const stockFromProducts = (products) => products.filter(p => p.productCode != null && p.stockQty != null).map(p => ({ productId: p.id ?? null, productCode: p.productCode, productName: p.productName, warehouseCode: null, warehouseName: null, qtyInWarehouse: p.stockQty, unitName: p.unit }))
 
-export async function pullAllRaw(updatedSince) {
+async function pullAllRaw(updatedSince) {
   const [customers, products, orders] = await Promise.all([pullCustomers(updatedSince), pullProducts(updatedSince), pullSalesOrders(updatedSince)])
   const materials = await pullMaterials(updatedSince)
   const real = await pullStock(products.map(p => ({ productCode: str(p.productCode), warehouseCode: str(p.warehouseCode) })))
@@ -91,7 +90,7 @@ const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v)
 const json = v => (Array.isArray(v) || isObj(v) ? v : null)
 const CF_N = ['fieldName','attributeName','customFieldName','name','label','fieldCode','code']
 const CF_V = ['fieldValue','attributeValue','customFieldValue','fieldValueName','valueName','displayValue','choiceValue','value','val']
-export function flattenCustom(...objs) {
+function flattenCustom(...objs) {
   const out = {}
   for (const obj of objs) for (const v of Object.values(obj)) {
     if (!Array.isArray(v) || !v.length || !isObj(v[0])) continue
@@ -100,7 +99,7 @@ export function flattenCustom(...objs) {
   }
   return out
 }
-export function mapSaleOrders(orders) {
+function mapSaleOrders(orders) {
   const out = []
   for (const o of orders) {
     const ds = Array.isArray(o.saleManageOrderDetailRowApiVOList) ? o.saleManageOrderDetailRowApiVOList : []
@@ -116,13 +115,13 @@ export function mapSaleOrders(orders) {
   }
   return out
 }
-export const mapCustomers = (cs) => cs.map(c => ({ id: str(c.code), bl_id: num(c.id), code: txt(c.code), name: txt(c.name), full_name: txt(c.fullName), contact: txt(c.contact), phone: txt(c.phone), address: txt(c.address), receivable_days: num(c.receivableDays), responsible_users: json(c.responsibleUsers), responsible_groups: json(c.responsibleGroups), custom: flattenCustom(c), raw: c }))
-export const mapProducts = (ps) => ps.map(p => ({ id: str(p.productCode), product_code: txt(p.productCode), product_name: txt(p.productName), product_spec: txt(p.productSpecification), unit: txt(p.unit), origin_type: num(p.originType), stock_qty: num(p.stockQty), cost_price: num(p.costPrice), sales_price: num(p.salesPrice), safety_qty: num(p.safetyQty), max_qty: num(p.maxQty), min_qty: num(p.minQty), process_routing_code: txt(p.prcessRoutingCode), vendor_code: txt(p.vendorCode), warehouse_code: txt(p.warehouseCode), custom: flattenCustom(p), raw: p }))
-export const mapMaterials = (rs) => rs.map(r => ({ id: `${str(r.lastProductCode)}#${str(r.nextProductCode)}#${str(r.feedProcessCode)}`, last_product_code: txt(r.lastProductCode), next_product_code: txt(r.nextProductCode), feed_process_code: txt(r.feedProcessCode), unit_qty: num(r.unitQty), remark: txt(r.remark), created_at: txt(r.createdAt), updated_at: txt(r.updatedAt), custom: flattenCustom(r), raw: r }))
-export const mapStock = (ss) => ss.map(s => ({ id: `${str(s.productCode)}#${str(s.warehouseCode)}`, product_id: num(s.productId), product_code: txt(s.productCode), product_name: txt(s.productName), warehouse_id: num(s.warehouseId), warehouse_code: txt(s.warehouseCode), warehouse_name: txt(s.warehouseName), qty_in_warehouse: num(s.qtyInWarehouse), unit_name: txt(s.unitName), custom: flattenCustom(s), raw: s }))
+const mapCustomers = (cs) => cs.map(c => ({ id: str(c.code), bl_id: num(c.id), code: txt(c.code), name: txt(c.name), full_name: txt(c.fullName), contact: txt(c.contact), phone: txt(c.phone), address: txt(c.address), receivable_days: num(c.receivableDays), responsible_users: json(c.responsibleUsers), responsible_groups: json(c.responsibleGroups), custom: flattenCustom(c), raw: c }))
+const mapProducts = (ps) => ps.map(p => ({ id: str(p.productCode), product_code: txt(p.productCode), product_name: txt(p.productName), product_spec: txt(p.productSpecification), unit: txt(p.unit), origin_type: num(p.originType), stock_qty: num(p.stockQty), cost_price: num(p.costPrice), sales_price: num(p.salesPrice), safety_qty: num(p.safetyQty), max_qty: num(p.maxQty), min_qty: num(p.minQty), process_routing_code: txt(p.prcessRoutingCode), vendor_code: txt(p.vendorCode), warehouse_code: txt(p.warehouseCode), custom: flattenCustom(p), raw: p }))
+const mapMaterials = (rs) => rs.map(r => ({ id: `${str(r.lastProductCode)}#${str(r.nextProductCode)}#${str(r.feedProcessCode)}`, last_product_code: txt(r.lastProductCode), next_product_code: txt(r.nextProductCode), feed_process_code: txt(r.feedProcessCode), unit_qty: num(r.unitQty), remark: txt(r.remark), created_at: txt(r.createdAt), updated_at: txt(r.updatedAt), custom: flattenCustom(r), raw: r }))
+const mapStock = (ss) => ss.map(s => ({ id: `${str(s.productCode)}#${str(s.warehouseCode)}`, product_id: num(s.productId), product_code: txt(s.productCode), product_name: txt(s.productName), warehouse_id: num(s.warehouseId), warehouse_code: txt(s.warehouseCode), warehouse_name: txt(s.warehouseName), qty_in_warehouse: num(s.qtyInWarehouse), unit_name: txt(s.unitName), custom: flattenCustom(s), raw: s }))
 
 /** Date → 'yyyy-MM-dd HH:mm:ss'（Asia/Shanghai），增量水位用。 */
-export function toCnDateTime(d) {
+function toCnDateTime(d) {
   const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(d)
   const g = t => p.find(x => x.type === t).value
   const h = g('hour') === '24' ? '00' : g('hour')

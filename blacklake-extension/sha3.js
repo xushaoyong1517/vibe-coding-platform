@@ -17,7 +17,7 @@ function keccakF(A) {
   }
 }
 /** 字符串 → SHA3-224 十六进制串。 */
-export function sha3_224(str) {
+function sha3_224(str) {
   const bytes = [...new TextEncoder().encode(str)]
   const rate = 144
   const A = new Array(25).fill(0n)

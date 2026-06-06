@@ -1,54 +1,66 @@
-// Service Worker（MV3）：编排同步。跨域请求在此发起，靠 manifest host_permissions 放行（无 CORS 限制）。
-import { setConfig, pullAllRaw, mapSaleOrders, mapCustomers, mapProducts, mapMaterials, mapStock, toCnDateTime } from './blacklake.js'
-import { putAll, clearStore, count, setMeta, getMeta, STORES } from './db.js'
+// Service Worker（MV3，经典脚本）。跨域同步在此发起（host_permissions 放行）；SQL 写入 sql.js。
+importScripts('sql-wasm.js', 'sha3.js', 'blacklake.js', 'sqldb.js')
 
-const MAP = { sale_orders: mapSaleOrders, customers: mapCustomers, products: mapProducts, materials: mapMaterials, stock: mapStock }
-const RAWKEY = { sale_orders: 'orders', customers: 'customers', products: 'products', materials: 'materials', stock: 'stock' }
 const OVERLAP_MIN = 15
 
 async function loadConfig() {
-  const c = await chrome.storage.local.get(['baseUrl','loginType','factoryCode','username','phone','password'])
-  setConfig({ baseUrl: c.baseUrl || 'https://liteweb.blacklake.cn', loginType: Number(c.loginType ?? 1), factoryCode: c.factoryCode || '', username: c.username || '', phone: c.phone || '', password: c.password || '' })
+  const c = await chrome.storage.local.get(['baseUrl', 'loginType', 'factoryCode', 'username', 'phone', 'password'])
+  setConfig({
+    baseUrl: c.baseUrl || 'https://liteweb.blacklake.cn', loginType: Number(c.loginType ?? 1),
+    factoryCode: c.factoryCode || '', username: c.username || '', phone: c.phone || '', password: c.password || '',
+  })
 }
 
 async function sync(mode) {
   await loadConfig()
   let since
   if (mode === 'incremental') {
-    const wm = await getMeta('lastSyncedAt')
-    if (wm) since = toCnDateTime(new Date(new Date(wm).getTime() - OVERLAP_MIN * 60000))
+    const { lastSyncedAt } = await chrome.storage.local.get('lastSyncedAt')
+    if (lastSyncedAt) since = toCnDateTime(new Date(new Date(lastSyncedAt).getTime() - OVERLAP_MIN * 60000))
     else mode = 'full'
   }
   const raw = await pullAllRaw(since)
-  const counts = {}
-  for (const store of STORES) {
-    const rows = MAP[store](raw[RAWKEY[store]])
-    if (mode === 'full') await clearStore(store)   // 全量先清空（增量只增量写入）
-    await putAll(store, rows)
-    counts[store] = rows.length
+  const mapped = {
+    sale_orders: mapSaleOrders(raw.orders),
+    customers: mapCustomers(raw.customers),
+    products: mapProducts(raw.products),
+    materials: mapMaterials(raw.materials),
+    stock: mapStock(raw.stock),
   }
+  await sqlSync(mode, mapped)
+  const counts = {}; for (const [k, v] of Object.entries(mapped)) counts[k] = v.length
   const at = new Date().toISOString()
-  await setMeta('lastSyncedAt', at); await setMeta('lastMode', mode)
+  await chrome.storage.local.set({ lastSyncedAt: at, lastMode: mode })
   return { ok: true, mode, since: since ?? null, counts, syncedAt: at }
 }
 
 async function status() {
-  const counts = {}
-  for (const s of STORES) counts[s] = await count(s)
-  return { counts, lastSyncedAt: await getMeta('lastSyncedAt'), lastMode: await getMeta('lastMode') }
+  const counts = await sqlCounts()
+  const { lastSyncedAt, lastMode } = await chrome.storage.local.get(['lastSyncedAt', 'lastMode'])
+  return { ok: true, counts, lastSyncedAt: lastSyncedAt ?? null, lastMode: lastMode ?? null, tables: TABLE_NAMES }
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+async function setSchedule(enabled, minutes) {
+  await chrome.alarms.clear('bl-sync')
+  if (enabled) await chrome.alarms.create('bl-sync', { periodInMinutes: Math.max(1, Number(minutes) || 60) })
+  await chrome.storage.local.set({ scheduleEnabled: !!enabled, scheduleMinutes: Number(minutes) || 60 })
+  return { ok: true }
+}
+
+chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
   ;(async () => {
     try {
       if (msg.action === 'sync') sendResponse(await sync(msg.mode || 'full'))
       else if (msg.action === 'status') sendResponse(await status())
       else if (msg.action === 'saveConfig') { await chrome.storage.local.set(msg.config); sendResponse({ ok: true }) }
-      else sendResponse({ ok: false, error: 'unknown action' })
+      else if (msg.action === 'setSchedule') sendResponse(await setSchedule(msg.enabled, msg.minutes))
+      else if (msg.action === 'runSql') {
+        if (!/^\s*(select|with|pragma)\b/i.test(msg.sql || '')) { sendResponse({ ok: false, error: '仅允许只读查询（SELECT/WITH/PRAGMA）' }); return }
+        sendResponse({ ok: true, ...(await sqlSelect(msg.sql, msg.params)) })
+      } else sendResponse({ ok: false, error: 'unknown action' })
     } catch (e) { sendResponse({ ok: false, error: String(e?.message || e) }) }
   })()
   return true   // 异步响应
 })
 
-// 可选：定时增量（chrome.alarms）。需在 manifest permissions 加 "alarms"。
-chrome.alarms?.onAlarm.addListener(a => { if (a.name === 'bl-sync') sync('incremental').catch(() => {}) })
+chrome.alarms.onAlarm.addListener(a => { if (a.name === 'bl-sync') sync('incremental').catch(e => console.error('[alarm sync]', e)) })

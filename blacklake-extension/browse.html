@@ -1,0 +1,26 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>黑湖数据浏览</title><style>
+body{font:13px/1.5 -apple-system,"Microsoft YaHei",sans-serif;margin:0;padding:16px;color:#222}
+h1{font-size:17px;margin:0 0 12px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.tab{padding:6px 13px;border:1px solid #ddd;border-radius:8px;cursor:pointer;background:#fff;font-weight:600}
+.tab.on{background:#0e6b62;color:#fff;border-color:#0e6b62}
+.bar{display:flex;gap:8px;margin-bottom:10px}
+input{flex:1;padding:7px 10px;border:1px solid #ccc;border-radius:7px;font:inherit}
+button{padding:7px 14px;border:0;border-radius:7px;background:#0e6b62;color:#fff;font:inherit;cursor:pointer}
+details{margin-bottom:10px}summary{cursor:pointer;color:#666;font-size:12px}
+textarea{width:100%;box-sizing:border-box;height:54px;font:12px ui-monospace,monospace;padding:7px;border:1px solid #ccc;border-radius:7px;margin-top:6px}
+#info{font-size:12px;color:#888;margin-bottom:8px}
+.wrap{overflow:auto;max-height:calc(100vh - 200px);border:1px solid #eee;border-radius:8px}
+table{border-collapse:collapse;font-size:12px;white-space:nowrap}
+th,td{border-bottom:1px solid #f0f0f0;padding:5px 9px;text-align:left;max-width:320px;overflow:hidden;text-overflow:ellipsis}
+th{position:sticky;top:0;background:#faf9f4;font-weight:700}
+</style></head><body>
+<h1>黑湖小工单 · 本地数据浏览</h1>
+<div class="tabs" id="tabs"></div>
+<div class="bar"><input id="q" placeholder="搜索当前表（任意列，回车）"><button id="go">搜索</button></div>
+<details><summary>高级：自定义只读 SQL（SELECT / WITH / PRAGMA）</summary>
+<textarea id="sql" placeholder="SELECT * FROM products WHERE custom LIKE '%成品%' LIMIT 100"></textarea>
+<button id="runsql" style="margin-top:6px">运行 SQL</button></details>
+<div id="info"></div>
+<div class="wrap"><table id="tbl"></table></div>
+<script src="browse.js"></script></body></html>
