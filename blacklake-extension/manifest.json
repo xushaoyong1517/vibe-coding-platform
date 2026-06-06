@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "黑湖小工单 本地同步",
+  "version": "1.0.0",
+  "description": "拉取黑湖小工单 5 张数据（订单/客户/产品/BOM/库存）到本地 IndexedDB。",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://liteweb.blacklake.cn/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "黑湖本地同步" }
+}
