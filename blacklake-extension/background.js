@@ -3,11 +3,31 @@ importScripts('sql-wasm.js', 'sha3.js', 'blacklake.js', 'sqldb.js')
 
 const OVERLAP_MIN = 15
 
+// ── 复用网页登录态：监听网页发往黑湖的请求，抓取其 X-AUTH 头（登录 token）。──
+// 这样扩展同步时直接用网页的 token，不调 _login，不会因「单会话」把网页踢下线。
+// 顶层注册 webRequest 监听，匹配请求会唤醒 SW。
+let webAuth = null
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details) => {
+    const h = details.requestHeaders || []
+    const x = h.find(e => e.name.toLowerCase() === 'x-auth')
+    if (x && x.value && x.value !== webAuth) {
+      webAuth = x.value
+      chrome.storage.local.set({ webToken: webAuth, webTokenAt: new Date().toISOString() })
+    }
+  },
+  { urls: ['*://liteweb.blacklake.cn/*'] },
+  ['requestHeaders', 'extraHeaders'],
+)
+// 注入给 blacklake.js：优先内存值，回落 storage（SW 重启后内存丢失）。
+setTokenProvider(async () => webAuth || (await chrome.storage.local.get('webToken')).webToken || null)
+
 async function loadConfig() {
-  const c = await chrome.storage.local.get(['baseUrl', 'loginType', 'factoryCode', 'username', 'phone', 'password'])
+  const c = await chrome.storage.local.get(['baseUrl', 'loginType', 'factoryCode', 'username', 'phone', 'password', 'tokenMode'])
   setConfig({
     baseUrl: c.baseUrl || 'https://liteweb.blacklake.cn', loginType: Number(c.loginType ?? 1),
     factoryCode: c.factoryCode || '', username: c.username || '', phone: c.phone || '', password: c.password || '',
+    tokenMode: c.tokenMode || 'web',
   })
 }
 
@@ -36,8 +56,11 @@ async function sync(mode) {
 
 async function status() {
   const counts = await sqlCounts()
-  const { lastSyncedAt, lastMode } = await chrome.storage.local.get(['lastSyncedAt', 'lastMode'])
-  return { ok: true, counts, lastSyncedAt: lastSyncedAt ?? null, lastMode: lastMode ?? null, tables: TABLE_NAMES }
+  const s = await chrome.storage.local.get(['lastSyncedAt', 'lastMode', 'tokenMode', 'webToken', 'webTokenAt'])
+  return {
+    ok: true, counts, lastSyncedAt: s.lastSyncedAt ?? null, lastMode: s.lastMode ?? null, tables: TABLE_NAMES,
+    tokenMode: s.tokenMode || 'web', hasWebToken: !!(webAuth || s.webToken), webTokenAt: s.webTokenAt ?? null,
+  }
 }
 
 async function setSchedule(enabled, minutes) {

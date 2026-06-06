@@ -8,7 +8,13 @@ button{margin-top:16px;padding:9px 18px;border:0;border-radius:8px;background:#0
 #msg{margin-left:12px;color:#0e6b62;font-size:13px}
 </style></head><body>
 <h1>黑湖小工单 · 配置</h1>
-<h2>连接</h2>
+<h2>登录态来源</h2>
+<select id="tokenMode">
+  <option value="web">复用网页登录态（推荐，不挤掉网页）</option>
+  <option value="login">账号密码登录（黑湖单会话，会把网页踢下线）</option>
+</select>
+<p style="font-size:12px;color:#888;margin:6px 0 0">复用模式：保持浏览器里已登录小工单网页即可；扩展自动借用网页令牌同步，互不挤占。状态：<b id="webstat">检测中…</b></p>
+<h2>账号（仅「账号密码登录」模式需要）</h2>
 <label>登录方式</label>
 <select id="loginType"><option value="1">工厂码 + 账号</option><option value="0">手机号</option></select>
 <label>工厂码（LOGIN_TYPE=1）</label><input id="factory">

@@ -4,6 +4,11 @@ const LABEL = { sale_orders:'销售订单', customers:'客户', products:'产品
 async function refresh() {
   const s = await send({ action:'status' })
   if (!s?.ok) { $('counts').textContent = s?.error || ''; return }
+  if (s.tokenMode === 'web') {
+    $('tok').innerHTML = s.hasWebToken
+      ? '<span style="color:#2a7a4b">● 已复用网页登录态（不挤掉网页）</span>'
+      : '<span style="color:#b07d10">● 未捕获网页登录态：请先登录小工单网页并点一下页面</span>'
+  } else $('tok').innerHTML = '<span style="color:#c0392b">● 账号密码登录模式（会把网页踢下线）</span>'
   $('counts').innerHTML = Object.entries(s.counts).map(([k,v]) => `<div class="row"><span>${LABEL[k]||k}</span><b>${v}</b></div>`).join('')
   $('last').textContent = s.lastSyncedAt ? '上次同步：' + new Date(s.lastSyncedAt).toLocaleString('zh-CN') + (s.lastMode === 'full' ? ' · 全量' : s.lastMode === 'incremental' ? ' · 增量' : '') : '尚未同步'
 }

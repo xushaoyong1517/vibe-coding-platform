@@ -1,10 +1,17 @@
 // 黑湖小工单对接（浏览器扩展 service worker 内运行；跨域靠 manifest host_permissions 放行）。
 
-let CFG = { baseUrl: 'https://liteweb.blacklake.cn', loginType: 1, factoryCode: '', username: '', phone: '', password: '' }
+// tokenMode='web'：复用网页登录态（抓到的 X-AUTH），不调 _login → 不挤掉网页（默认，推荐）。
+// tokenMode='login'：用账号密码 _login（黑湖单会话，会把网页踢下线）。
+let CFG = { baseUrl: 'https://liteweb.blacklake.cn', loginType: 1, factoryCode: '', username: '', phone: '', password: '', tokenMode: 'web' }
 function setConfig(c) { CFG = { ...CFG, ...c } }
 
 const OK = '01000000'
 let token = null, loginInflight = null
+
+// 网页 token 提供者：由 background 注入（读 webRequest 抓到的最新 X-AUTH）。
+let tokenProvider = null
+function setTokenProvider(fn) { tokenProvider = fn }
+async function webToken() { return tokenProvider ? await tokenProvider() : null }
 
 async function login() {
   if (!CFG.password) throw new Error('未配置密码')
@@ -19,6 +26,11 @@ async function login() {
   return token
 }
 async function ensureToken(force = false, stale) {
+  if (CFG.tokenMode === 'web') {
+    const t = await webToken()
+    if (!t) throw new Error('未捕获到网页登录态：请先在浏览器打开并登录小工单网页，点一下页面再回来同步。')
+    return t
+  }
   if (token && (!force || (stale != null && token !== stale))) return token
   if (!loginInflight) loginInflight = login().finally(() => { loginInflight = null })
   return loginInflight
@@ -32,7 +44,10 @@ async function call(path, body, tok) {
 async function blFetch(path, body) {
   let tok = await ensureToken()
   let resp = await call(path, body, tok)
-  if (resp.code === '401' || resp.subCode === 'USER_VERIFICATION_ERROR') { tok = await ensureToken(true, tok); resp = await call(path, body, tok) }
+  if (resp.code === '401' || resp.subCode === 'USER_VERIFICATION_ERROR') {
+    tok = await ensureToken(true, tok)   // web：取最新网页 token（可能已轮换）；login：强制重登
+    resp = await call(path, body, tok)
+  }
   if (resp.code !== OK) throw new Error(`黑湖接口失败 ${path}: ${resp.code} ${resp.msg ?? resp.message ?? ''}`)
   return resp
 }
