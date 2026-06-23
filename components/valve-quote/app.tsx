@@ -1,11 +1,12 @@
 'use client'
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, ComposedChart, Bar, Line, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { VALVE_CODE_TABLES, TIER_CONFIG, type BomTier } from '@/lib/valve-code-tables'
 import { valveSpec, diffBomRows, type EventInput } from '@/lib/events'
 import { QUOTE_STATUSES, STATUS_COLOR, STATUS_META, nextStates, transitionBlockReason } from '@/lib/quote-status'
 import { matchDrawing } from '@/lib/match-drawing'
+import { highTempAdjust, isAusteniticNonH, parseTempC, H_GRADE_C } from '@/lib/high-temp'
 import { PageKitting } from './kitting-workbench'
 import { PageDataSync } from './data-sync'
 
@@ -60,6 +61,9 @@ interface QuoteItem {
   中腔填料: string
   件号: string
   设计标准: string
+  验收标准?: string        // 默认 API 598
+  结构长度标准?: string    // 面对面尺寸，默认 ASME B16.10
+  连接标准?: string        // 法兰/端部连接标准，默认 ASME B16.5
   工厂编号?: string
   置信度?: string
   待确认?: string[]
@@ -397,12 +401,14 @@ function validateItem(item: QuoteItem): ValidationIssue[] {
   if (item.类型 && !VALID_VALVE_TYPES.includes(item.类型))
     add('类型', `未知类型"${item.类型}"，应为：${VALID_VALVE_TYPES.join(' / ')}`, 'error')
 
-  // 3. DN 标准口径
-  if (item.DN && !STANDARD_DN_VALUES.includes(item.DN))
+  // 3. DN 标准口径（AI 可能回传字符串如 "150"/"DN150"，统一抽数字再比对，避免假"非标"）
+  const dnNum = item.DN != null ? parseInt(String(item.DN).replace(/[^\d]/g, ''), 10) : NaN
+  if (item.DN && !STANDARD_DN_VALUES.includes(dnNum))
     add('DN', `DN${item.DN} 非标准口径，请确认`, 'warning')
 
-  // 4. 压力等级
-  if (item.压力 && !VALID_PRESSURE_CLASSES.includes(item.压力))
+  // 4. 压力等级（同上，"150LB"/"150" 都归一为数字 150 再比对）
+  const presNum = item.压力 != null ? parseInt(String(item.压力).replace(/[^\d]/g, ''), 10) : NaN
+  if (item.压力 && !VALID_PRESSURE_CLASSES.includes(presNum))
     add('压力', `${item.压力}LB 非标准压力等级（${VALID_PRESSURE_CLASSES.join('/')}）`, 'error')
 
   // 5. 逻辑一致性
@@ -411,6 +417,11 @@ function validateItem(item: QuoteItem): ValidationIssue[] {
 
   if ((item.压力 === 800 || item.压力 === 900) && item.设计标准 && !item.设计标准.includes('602'))
     add('设计标准', '800/900LB 通常适用 API 602，请确认设计标准', 'warning')
+
+  // 5b. 高温工况：温度高但阀杆未取 H 级（兜底提醒，规则未自动覆盖的历史/手填值）
+  const tempC = parseTempC(`${item.特殊 ?? ''} ${item.备注 ?? ''}`)
+  if (tempC != null && tempC >= H_GRADE_C && isAusteniticNonH(item.阀杆轴))
+    add('阀杆轴', `工况${tempC}℃ ≥${H_GRADE_C}℃，阀杆建议取 H 级（如 F304H/F316H）`, 'warning')
 
   // 6. 件号范围（API 标准）
   const isAPI = !item.设计标准 || item.设计标准.includes('API')
@@ -861,6 +872,10 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
   type PrefillHint = { unit: string; unitName: string; code: string; cn: string }
   type MatchInfo = { level: string; count: number; rows: number; topCode: string | null; prefill: Record<string, string>; unmatched: string[]; hint: PrefillHint[]; code: string | null; codes: Record<string, string> }
   const [matchByIdx, setMatchByIdx] = useState<Record<number, MatchInfo>>({})
+  // 规则补齐：记录每条 item 中由「牌1/牌2 确定性推导」填入的字段（用于打"规则"标 + 允许种子变更时重算覆盖）
+  const [derivedByIdx, setDerivedByIdx] = useState<Record<number, string[]>>({})
+  const derivedRef = useRef<Record<number, string[]>>({})
+  useEffect(() => { derivedRef.current = derivedByIdx }, [derivedByIdx])
   const enrichItems = async (items: QuoteItem[]) => {
     try {
       const res = await fetch('/api/params/enrich', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }) })
@@ -872,12 +887,14 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
       })
       setMatchByIdx(m)
       // 未识别字段并入「待确认」→ 触发金色高亮 + 推断✓（复用置信度UI）
-      setExtracted(prev => prev ? prev.map((it, i) => {
+      const mergedItems = items.map((it, i) => {
         const un = m[i]?.unmatched ?? []
         if (!un.length) return it
-        const merged = [...new Set([...(it.待确认 ?? []), ...un])]
-        return { ...it, 待确认: merged }
-      }) : prev)
+        return { ...it, 待确认: [...new Set([...(it.待确认 ?? []), ...un])] }
+      })
+      setExtracted(prev => prev ? prev.map((it, i) => mergedItems[i] ?? it) : prev)
+      // 规则补齐：种子(主体+件号)已由 AI 提取到的，立即确定性推导派生字段；标准类字段总是补默认；高温规则联动
+      mergedItems.forEach((it, i) => { void deriveDependents(i, it); applyStandards(i, it); applyTempRules(i, it) })
     } catch { /* enrich 失败不阻塞主流程 */ }
   }
   useEffect(() => {
@@ -1257,14 +1274,130 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
     (item.待确认 ?? []).some(c => c === field || c === label || c.includes(label) || label.includes(c))
   const inferTotal = extracted ? extracted.reduce((n, it) => n + (it.待确认?.length ?? 0), 0) : 0
 
+  // ── 规则补齐（第①件）：种子(主体+件号)齐 → 牌1/牌2 确定性推导派生字段 ──
+  // 把 deriveBOM 的补齐能力从「生成BOM」前移到「确认参数」：填 阀座/阀瓣阀闸/阀杆轴/螺柱/中腔填料/设计标准。
+  const SEED_FIELDS = new Set<string>(['主体', '件号'])
+  const DERIVED_FIELDS: (keyof QuoteItem)[] = ['阀座', '阀瓣阀闸', '阀杆轴', '螺柱', '中腔填料']
+  const designStdFor = (类型?: string) => (类型 === '止回阀' ? 'API 594' : 'API 600')
+  // BOM 零件名 → 确认页参数字段名
+  const BOM_PART_TO_FIELD: Record<string, keyof QuoteItem> = {
+    '阀座': '阀座', '阀瓣/闸板': '阀瓣阀闸', '阀杆': '阀杆轴', '螺柱': '螺柱', '填料': '中腔填料',
+  }
+  const deriveDependents = async (idx: number, item: QuoteItem, opts?: { force?: boolean }) => {
+    const 主体 = String(item.主体 ?? '').trim()
+    const 件号 = String(item.件号 ?? '').trim()
+    const dn = Number(item.DN ?? 0)
+    if (!主体 || !件号 || !dn) return  // 种子不齐 → 不推导（缺省由人工/默认策略决定，属第②件）
+    const owned = new Set(derivedRef.current[idx] ?? [])  // 已由规则填的字段，允许种子变更时覆盖
+    // force=种子(主体/件号)变更触发 → 派生字段是种子的纯函数，强制重算覆盖（含历史/AI填入的旧值）
+    const canFill = (f: keyof QuoteItem) =>
+      opts?.force || !String(item[f] ?? '').trim() || (item.待确认 ?? []).includes(f as string) || owned.has(f as string)
+    const patch: Partial<QuoteItem> = {}
+    const filled: string[] = []
+    try {
+      const res = await fetch('/api/bom/derive', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 主体, 件号, DN: dn }),
+      })
+      const d = await res.json()
+      if (!d?.ok || !Array.isArray(d.bom)) return
+      const matOf = (part: string) => (d.bom as { 零件: string; 材质: string }[]).find(r => r.零件 === part)?.材质
+      for (const [part, field] of Object.entries(BOM_PART_TO_FIELD)) {
+        const mat = matOf(part)
+        if (mat && canFill(field)) { patch[field] = mat as never; filled.push(field as string) }
+      }
+    } catch { return }  // 端点失败 → 不阻塞，保持现状
+    // 高温工况联动：基于"刚推导出的阀杆 + 现有特殊/备注"升 H 级 + 补加长/散热（确定性规则）
+    const ht = highTempAdjust({ ...item, ...patch })
+    for (const f of ht.changed) { patch[f as keyof QuoteItem] = ht.patch[f as '阀杆轴' | '特殊'] as never; if (!filled.includes(f)) filled.push(f) }
+    if (!filled.length) return
+    setExtracted(prev => prev ? prev.map((it, i) => i !== idx ? it : ({
+      ...it, ...patch, 待确认: (it.待确认 ?? []).filter(f => !filled.includes(f)),
+    })) : prev)
+    setDerivedByIdx(p => ({ ...p, [idx]: [...new Set([...(p[idx] ?? []), ...filled])] }))
+  }
+
+  // ── 标准类字段默认推导（设计/验收/结构长度/连接标准）——纯函数，无需种子、无需网络 ──
+  const STANDARD_FIELDS: (keyof QuoteItem)[] = ['设计标准', '验收标准', '结构长度标准', '连接标准']
+  const computeStandards = (item: QuoteItem): Partial<QuoteItem> => {
+    const conn = String(item.连接 ?? '')
+    const isWeld = /对焊|焊|bw|sw/i.test(conn)
+    const isThd = /螺纹|thd|npt/i.test(conn)
+    const dn = Number(item.DN ?? 0)
+    return {
+      设计标准: designStdFor(item.类型),                                  // 闸/截止→API600, 止回→API594
+      验收标准: 'API 598',                                               // 阀门检验与试验通用标准
+      结构长度标准: 'ASME B16.10',                                       // 面对面/端到端尺寸
+      连接标准: isWeld ? 'ASME B16.25' : isThd ? 'ASME B1.20.1'          // 对焊/螺纹端
+              : (dn > 600 ? 'ASME B16.47' : 'ASME B16.5'),              // 法兰：>DN600 走 B16.47
+    }
+  }
+  const applyStandards = (idx: number, item: QuoteItem, opts?: { force?: boolean }) => {
+    const owned = new Set(derivedRef.current[idx] ?? [])
+    const std = computeStandards(item)
+    const patch: Partial<QuoteItem> = {}
+    const filled: string[] = []
+    for (const f of STANDARD_FIELDS) {
+      const v = std[f]
+      if (!v) continue
+      const cur = String(item[f] ?? '').trim()
+      const canFill = opts?.force || !cur || (item.待确认 ?? []).includes(f as string) || owned.has(f as string)
+      if (canFill && cur !== v) { patch[f] = v as never; filled.push(f as string) }
+    }
+    if (!filled.length) return
+    setExtracted(prev => prev ? prev.map((it, i) => i !== idx ? it : ({
+      ...it, ...patch, 待确认: (it.待确认 ?? []).filter(f => !filled.includes(f)),
+    })) : prev)
+    setDerivedByIdx(p => ({ ...p, [idx]: [...new Set([...(p[idx] ?? []), ...filled])] }))
+  }
+
+  // ── 高温工况规则（独立路径）：用于提取后 & 用户编辑特殊/备注时；种子齐的材质升级已内嵌在 deriveDependents ──
+  const applyTempRules = (idx: number, item: QuoteItem) => {
+    const owned = new Set(derivedRef.current[idx] ?? [])
+    const ht = highTempAdjust(item)
+    if (!ht.changed.length) return
+    const patch: Partial<QuoteItem> = {}
+    const filled: string[] = []
+    for (const f of ht.changed) {
+      if (f === '阀杆轴') {
+        // 阀杆升 H：仅当空 / 规则已填 时覆盖，不动用户手填值
+        const canFill = !String(item.阀杆轴 ?? '').trim() || owned.has('阀杆轴')
+        if (canFill) { patch.阀杆轴 = ht.patch.阀杆轴 as never; filled.push('阀杆轴') }
+      } else {
+        patch[f as keyof QuoteItem] = ht.patch[f as '特殊'] as never  // 特殊：补加长/散热（幂等，安全）
+        filled.push(f)
+      }
+    }
+    if (!filled.length) return
+    setExtracted(prev => prev ? prev.map((it, i) => i !== idx ? it : ({
+      ...it, ...patch, 待确认: (it.待确认 ?? []).filter(f => !filled.includes(f)),
+    })) : prev)
+    setDerivedByIdx(p => ({ ...p, [idx]: [...new Set([...(p[idx] ?? []), ...filled.filter(f => f === '阀杆轴')])] }))
+  }
+
   // ── 就地编辑：直接改参数字段（编辑即确认该字段）+ 阀门组增删复制 ──
   const NUMERIC_FIELDS = new Set(['DN', '压力', '数量'])
-  const updateField = (idx: number, field: keyof QuoteItem, raw: string) =>
-    setExtracted(prev => prev ? prev.map((it, i) => i !== idx ? it : ({
-      ...it,
+  const STD_DRIVER_FIELDS = new Set<string>(['类型', '连接', 'DN'])  // 改这些 → 重算标准类字段
+  const TEMP_DRIVER_FIELDS = new Set<string>(['特殊', '备注'])       // 改这些 → 重判高温规则
+  const updateField = (idx: number, field: keyof QuoteItem, raw: string) => {
+    const cur = extracted?.[idx]
+    if (!cur) return
+    const next: QuoteItem = {
+      ...cur,
       [field]: NUMERIC_FIELDS.has(field as string) ? (Number(raw) || 0) : raw,
-      待确认: (it.待确认 ?? []).filter(f => f !== field),
-    })) : prev)
+      待确认: (cur.待确认 ?? []).filter(f => f !== field),
+    }
+    setExtracted(prev => prev ? prev.map((it, i) => i === idx ? next : it) : prev)
+    // 用户手动改了派生/标准字段 → 转为用户所有，后续规则不再覆盖
+    if (DERIVED_FIELDS.includes(field) || STANDARD_FIELDS.includes(field))
+      setDerivedByIdx(p => ({ ...p, [idx]: (p[idx] ?? []).filter(f => f !== field) }))
+    // 改了种子字段(主体/件号) → 规则补齐下游材质（强制重算，内含高温升级）
+    if (SEED_FIELDS.has(field as string)) void deriveDependents(idx, next, { force: true })
+    // 改了标准驱动字段(类型/连接/DN) → 重算标准类字段（强制）
+    if (STD_DRIVER_FIELDS.has(field as string)) applyStandards(idx, next, { force: true })
+    // 改了特殊/备注(可能填入温度) → 重判高温规则（升H级阀杆 + 补加长/散热）
+    if (TEMP_DRIVER_FIELDS.has(field as string)) applyTempRules(idx, next)
+  }
   const dupItem = (idx: number) =>
     setExtracted(prev => { if (!prev) return prev; const n = [...prev]; n.splice(idx + 1, 0, JSON.parse(JSON.stringify(prev[idx]))); return n })
   const delItem = (idx: number) =>
@@ -1448,9 +1581,10 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                   {FIELDS.map(([label, field]) => {
                     const fi = issueMap[field]
                     const infer = !fi && isInfer(item, label, field as string)
-                    const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : infer ? '#fffaf0' : '#fff'
-                    const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : infer ? '#f0dcae' : C.borderLight
-                    const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : infer ? C.amber : C.textLight
+                    const derived = !fi && !infer && (derivedByIdx[idx] ?? []).includes(field as string)
+                    const bg     = fi?.severity === 'error' ? '#FFF2F2' : fi?.severity === 'warning' ? '#FFFBEB' : infer ? '#fffaf0' : derived ? '#f0f7ff' : '#fff'
+                    const border = fi?.severity === 'error' ? C.accent + '60' : fi?.severity === 'warning' ? C.amber + '80' : infer ? '#f0dcae' : derived ? C.blue + '55' : C.borderLight
+                    const lc     = fi?.severity === 'error' ? C.accent : fi?.severity === 'warning' ? C.amber : infer ? C.amber : derived ? C.blue : C.textLight
                     return (
                       <div key={field} style={{ background: bg, padding: '6px 8px', borderRadius: 4, border: `1px solid ${border}` }}>
                         <div style={{ fontSize: 10, color: lc, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
@@ -1458,6 +1592,10 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                           {infer && (
                             <span onClick={() => confirmField(idx, field as string)} title="点击确认无误"
                               style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.amber, padding: '1px 5px', borderRadius: 3, cursor: 'pointer' }}>推断 ✓</span>
+                          )}
+                          {derived && (
+                            <span title="由牌1/牌2规则自动推导（改主体或件号会重算）"
+                              style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.blue, padding: '1px 5px', borderRadius: 3 }}>规则</span>
                           )}
                         </div>
                         <Combobox
@@ -1503,6 +1641,45 @@ function PageNewQuote({ params, quotes, paramLib, drawings, setQuotes, setParams
                 {item.待确认 && item.待确认.length > 0 && (
                   <div style={{ marginTop: 6, fontSize: 12, color: C.amber }}>⚠ AI待确认: {item.待确认.join(', ')}</div>
                 )}
+
+                {/* 执行标准：设计/验收/结构长度/连接标准——由类型/连接/DN 规则推导默认，可改 */}
+                <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 6 }}>
+                  {([['设计标准', '设计标准'], ['验收标准', '验收标准'], ['结构长度标准', '结构长度'], ['连接标准', '连接标准']] as [keyof QuoteItem, string][]).map(([f, label]) => {
+                    const ruled = (derivedByIdx[idx] ?? []).includes(f as string)
+                    return (
+                      <div key={f} style={{ background: ruled ? '#f0f7ff' : '#fff', border: `1px solid ${ruled ? C.blue + '55' : C.borderLight}`, borderRadius: 4, padding: '6px 8px' }}>
+                        <div style={{ fontSize: 10, color: ruled ? C.blue : C.textLight, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                          <span>{label}</span>
+                          {ruled && <span title="由类型/连接/DN 规则推导" style={{ marginLeft: 'auto', fontSize: 9, fontWeight: 700, color: '#fff', background: C.blue, padding: '1px 5px', borderRadius: 3 }}>规则</span>}
+                        </div>
+                        <input value={String(item[f] ?? '')} onChange={e => updateField(idx, f, e.target.value)}
+                          style={{ width: '100%', border: 'none', outline: 'none', fontSize: 12, background: 'transparent', fontFamily: 'inherit', color: C.text }} />
+                      </div>
+                    )
+                  })}
+                </div>
+
+                {/* 特殊要求 / 备注：工况(温度)、加长/散热片、油漆、各类标准等——绝不丢弃，可改 */}
+                {(() => {
+                  const hot = /℃|度|高温|加长|散热|低温|NACE|低泄漏/.test(`${item.特殊 ?? ''}${item.备注 ?? ''}`)
+                  return (
+                    <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                      {([['特殊', '特殊要求/工况'], ['备注', '备注']] as [keyof QuoteItem, string][]).map(([f, label]) => (
+                        <div key={f} style={{ background: hot && f === '特殊' ? '#fff7ed' : '#fff', border: `1px solid ${hot && f === '特殊' ? C.amber + '80' : C.borderLight}`, borderRadius: 4, padding: '6px 8px' }}>
+                          <div style={{ fontSize: 10, color: hot && f === '特殊' ? C.amber : C.textLight, marginBottom: 2 }}>
+                            {hot && f === '特殊' ? '⚠ ' : ''}{label}
+                          </div>
+                          <input
+                            value={String(item[f] ?? '')}
+                            placeholder={f === '特殊' ? '如：工况650℃ / 加长140 / 加散热片' : '客户原始备注'}
+                            onChange={e => updateField(idx, f, e.target.value)}
+                            style={{ width: '100%', border: 'none', outline: 'none', fontSize: 12, background: 'transparent', fontFamily: 'inherit', color: C.text }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })()}
               </div>
             )
           })}
@@ -3867,6 +4044,33 @@ function PageQuoteLineDetail({ quote, lineIdx, setQuotes, persist, setPage }: {
         </div>
       </Card>
 
+      {/* 执行标准 + 特殊要求（随报价持久化，可改）*/}
+      <Card title={<span>执行标准 / 特殊要求 <span style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginLeft: 8 }}>标准默认由规则推导，工况/特殊勿丢</span></span>}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
+          {([['设计标准', '设计标准'], ['验收标准', '验收标准'], ['结构长度标准', '结构长度'], ['连接标准', '连接标准']] as [keyof QuoteItem, string][]).map(([f, label]) => (
+            <div key={f} style={{ border: `1px solid ${C.borderLight}`, borderRadius: 8, padding: '9px 12px' }}>
+              <div style={{ fontSize: 11, color: C.textLight, marginBottom: 3 }}>{label}</div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>
+                <InlineInput value={String(item[f] ?? '')} onCommit={v => patchItem({ [f]: v } as Partial<QuoteItem>)} />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+          {([['特殊', '特殊要求 / 工况'], ['备注', '备注']] as [keyof QuoteItem, string][]).map(([f, label]) => {
+            const hot = f === '特殊' && /℃|度|高温|加长|散热|低温|NACE|低泄漏/.test(String(item.特殊 ?? ''))
+            return (
+              <div key={f} style={{ border: `1px solid ${hot ? C.amber + '80' : C.borderLight}`, background: hot ? '#fff7ed' : '#fff', borderRadius: 8, padding: '9px 12px' }}>
+                <div style={{ fontSize: 11, color: hot ? C.amber : C.textLight, marginBottom: 3 }}>{hot ? '⚠ ' : ''}{label}</div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>
+                  <InlineInput value={String(item[f] ?? '')} onCommit={v => patchItem({ [f]: v } as Partial<QuoteItem>)} placeholder={f === '特殊' ? '如：工况650℃ / 加长140 / 加散热片' : '客户原始备注'} />
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </Card>
+
       {/* 物料清单 BOM（可编辑） */}
       <Card title={<span>物料清单 BOM <span style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginLeft: 8 }}>{bomRes?.bom.length ?? 0} 项 · 合计 {bomQty} 件</span></span>}
         extra={bomRes ? <span style={{ fontSize: 12, color: C.textDim }}>牌1 {bomRes.牌1} · 牌2 {bomRes.牌2}</span> : null}>
@@ -4368,7 +4572,8 @@ const NAV = [
   { id: 'dashboard',    icon: '🏠', label: '工作台',     group: 'main' },
   { id: 'quotes',       icon: '📄', label: '报价单',     group: 'main' },
   { id: 'quoteItems',   icon: '≣',  label: '报价明细',   group: 'main' },
-  { id: 'kitting',      icon: '◧',  label: '齐套分析',   group: 'main' },
+  // 齐套分析：测试期隐藏
+  // { id: 'kitting',      icon: '◧',  label: '齐套分析',   group: 'main' },
   { id: 'newQuote',     icon: '＋', label: '新建报价',   group: 'action' },
   { id: 'drawings',     icon: '📐', label: '小样图库',   group: 'data' },
   // 阀门参数库(标准码表母本)隐藏：参数词典已是其超集(同码表+别名/短名)，作唯一入口
@@ -4377,7 +4582,8 @@ const NAV = [
   { id: 'rules',        icon: '☶',  label: '规则库',     group: 'data' },
   { id: 'paramUnits',   icon: '❖',  label: '参数词典',   group: 'data' },
   { id: 'dataInit',     icon: '⊕',  label: '初始化',     group: 'data' },
-  { id: 'dataSync',     icon: '⇅',  label: '数据同步',   group: 'data' },
+  // 数据同步：测试期隐藏
+  // { id: 'dataSync',     icon: '⇅',  label: '数据同步',   group: 'data' },
 ]
 
 // ════════════════════════════════════════════════════
