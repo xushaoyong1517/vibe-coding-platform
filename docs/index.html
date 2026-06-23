@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>越强阀门 · 智能报价系统 — 流程图与架构图</title>
+<style>
+  :root{
+    --bg:#fafaf7; --card:#ffffff; --ink:#2c2c2c; --dim:#7a7a70; --light:#a5a59a;
+    --border:#ece9e2; --amber:#b8860b; --blue:#2c6fbb; --accent:#c0492b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",Segoe UI,sans-serif;
+       background:var(--bg);color:var(--ink);line-height:1.6}
+  header{position:sticky;top:0;z-index:10;background:rgba(250,250,247,.92);backdrop-filter:blur(8px);
+         border-bottom:1px solid var(--border);padding:14px 26px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .logo{display:flex;align-items:center;gap:9px;font-weight:800;font-size:17px}
+  .dot{width:14px;height:14px;border-radius:50%;background:var(--accent)}
+  .sub{color:var(--dim);font-size:12px;font-weight:500}
+  nav{margin-left:auto;display:flex;gap:6px}
+  nav button{font-family:inherit;font-size:14px;font-weight:700;cursor:pointer;border:1px solid var(--border);
+             background:#fff;color:var(--dim);padding:7px 16px;border-radius:8px;transition:.15s}
+  nav button.active{background:var(--amber);color:#fff;border-color:var(--amber)}
+  main{max-width:1180px;margin:0 auto;padding:26px 22px 80px}
+  section{display:none}
+  section.show{display:block;animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  h1{font-size:22px;margin:6px 0 2px}
+  .lead{color:var(--dim);font-size:13.5px;margin:0 0 18px}
+  h2{font-size:16px;margin:30px 0 10px;padding-left:10px;border-left:3px solid var(--amber)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px;
+        box-shadow:0 1px 2px rgba(20,24,28,.04);overflow:auto}
+  .note{background:#fff7ed;border:1px solid #f0dcae;color:#6f5316;border-radius:10px;
+        padding:10px 14px;font-size:13px;margin:14px 0}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin-top:6px}
+  th,td{border:1px solid var(--border);padding:7px 11px;text-align:left}
+  th{background:#faf7f0;font-weight:700}
+  .mermaid{display:flex;justify-content:center;min-height:60px}
+  .mermaid svg{max-width:100%;height:auto}
+  footer{max-width:1180px;margin:0 auto;padding:0 22px 50px;color:var(--light);font-size:12px}
+  .err{color:var(--accent);font-size:13px;padding:14px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="dot"></span>越强阀门 · 智能报价系统</div>
+  <span class="sub">产品流程图 &amp; 系统架构图</span>
+  <nav>
+    <button id="nav-flow" class="active" onclick="show('flow')">📋 产品流程</button>
+    <button id="nav-arch" onclick="show('arch')">🏗 系统架构</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ 产品流程 ============ -->
+  <section id="flow" class="show">
+    <h1>产品使用流程</h1>
+    <p class="lead">面向业务员：从登录到出报价单的完整路径。核心是「新建报价」三步走，其余是支撑与管理。</p>
+
+    <h2>一、总览：怎么用这个系统</h2>
+    <div class="card"><pre class="mermaid">
+flowchart TD
+    Start([业务员打开系统]) --> Login[登录<br/>选工厂租户 · 密码留空直接进]
+    Login --> Home[工作台<br/>看概览/待办]
+    Home --> NewQuote{要做什么?}
+    NewQuote -->|来了新询价| Flow[【核心】新建报价 3 步]
+    NewQuote -->|查/改已有报价| Manage[报价管理]
+    NewQuote -->|维护底层数据| Data[数据与规则]
+    Flow --> Quote[(生成报价单)]
+    Quote --> Manage
+    Data -.支撑.-> Flow
+    classDef core fill:#fff3e0,stroke:#b8860b,stroke-width:2px;
+    classDef normal fill:#f0f7ff,stroke:#2c6fbb;
+    class Flow,Quote core;
+    class Login,Home,Manage,Data normal;
+    </pre></div>
+
+    <h2>二、核心流程：新建报价（3 步）</h2>
+    <div class="card"><pre class="mermaid">
+flowchart TD
+    subgraph S1[第 1 步 · 输入客户需求]
+        direction TB
+        In{选择输入方式}
+        In -->|手输/粘贴| T[文本]
+        In -->|Excel 询价表| E[Excel]
+        In -->|PDF 询价单| P[PDF]
+        In -->|拍照/截图| I[图片]
+        T & E & P & I --> AI[AI 提取参数<br/>Kimi 解析型号/材质/工况]
+    end
+    AI --> S2
+    subgraph S2[第 2 步 · 确认参数]
+        direction TB
+        Rule[规则自动补齐<br/>牌1/牌2 推材质<br/>标准默认 API598/B16.10/B16.5<br/>高温≥525℃ → F304H+加长散热]
+        Rule --> Check{有无 待确认/报错?}
+        Check -->|金色待确认| Fix[业务员确认/改种子<br/>主体·件号]
+        Fix --> Rule
+        Check -->|红色报错| Fix
+        Check -->|全部 OK| Pass[参数确认完成]
+    end
+    Pass --> S3
+    subgraph S3[第 3 步 · 生成 BOM]
+        direction TB
+        BOM[确定性合成 BOM<br/>历史骨架 → 小样图 → 标准15行]
+        BOM --> Review{核对 BOM}
+        Review -->|需微调| EditBOM[手动改 BOM 行]
+        EditBOM --> Save
+        Review -->|OK| Save[填客户/交期 → 保存]
+    end
+    Save --> Done[(报价单已生成<br/>状态=草稿)]
+    classDef step fill:#fff3e0,stroke:#b8860b,stroke-width:1.5px;
+    class S1,S2,S3 step;
+    </pre></div>
+    <div class="note">💡 第 2 步大部分字段由规则自动填（蓝色"规则"标），业务员通常只需拍板 <b>主体 + 件号</b> 两个种子，其余联动重算。工况（温度/加长/散热片）进「特殊」框，不丢失。</div>
+
+    <h2>三、报价管理与状态流转</h2>
+    <div class="card"><pre class="mermaid">
+flowchart LR
+    Q[报价单列表] --> D[报价单详情]
+    D --> L[单条明细<br/>改参数/改BOM/执行标准]
+    Q -.汇总视图.-> Items[报价明细<br/>全部产品行]
+    subgraph ST[状态生命周期]
+        direction LR
+        草稿 --> 已发送 --> 已确认 --> 已下单((已下单·赢单))
+        已发送 -.退回.-> 草稿
+        已发送 --> 已失单
+        已确认 --> 已失单
+        草稿 & 已发送 & 已确认 --> 作废
+    end
+    D --> ST
+    </pre></div>
+
+    <h2>四、数据与规则（支撑核心流程，一次配置长期复用）</h2>
+    <div class="card"><pre class="mermaid">
+flowchart TD
+    subgraph Cfg[数据与规则 · 菜单]
+        direction TB
+        Dict[参数词典<br/>码表/别名/短名]
+        Prod[阀门产品库<br/>历史产品·匹配补缺]
+        Rules[规则库<br/>牌1主体族 / 牌2件号]
+        Draw[小样图库<br/>BOM 骨架模板]
+        Init[初始化<br/>批量导入起步数据]
+    end
+    Dict --> X[支撑·参数提取与归一]
+    Prod --> X
+    Rules --> Y[支撑·BOM 确定性合成]
+    Draw --> Y
+    Init -.首次建库.-> Dict & Prod & Rules & Draw
+    X -.用于.-> Z[新建报价·确认参数]
+    Y -.用于.-> Z2[新建报价·生成BOM]
+    classDef cfg fill:#f0f7ff,stroke:#2c6fbb;
+    class Dict,Prod,Rules,Draw,Init cfg;
+    </pre></div>
+
+    <div class="note">🎯 一句话：<b>AI 认参数 + 规则补全 + 人工只拍板关键种子</b> —— 把"老师傅脑子里的报价经验"沉淀成系统。</div>
+  </section>
+
+  <!-- ============ 系统架构 ============ -->
+  <section id="arch">
+    <h1>技术架构</h1>
+    <p class="lead">浏览器 → Next.js 前端 → API 路由 → 业务规则引擎 → Supabase 数据层，外接 Kimi(AI) 与黑湖(ERP)。</p>
+
+    <h2>一、分层架构总览</h2>
+    <div class="card"><pre class="mermaid">
+flowchart TB
+    subgraph Client[客户端]
+        Browser[浏览器<br/>业务员 PC]
+        Ext[黑湖小工单<br/>浏览器扩展 MV3]
+    end
+    subgraph Front[前端层 · Next.js 16 + React 19]
+        SPA[valve-quote 单页应用<br/>登录·工作台·新建报价·报价管理·数据规则]
+        Render[streamdown / mermaid 渲染]
+    end
+    subgraph API[API 层 · Next.js Route Handlers]
+        direction LR
+        Auth[auth<br/>登录/会话]
+        AIProxy[claude<br/>Kimi 代理]
+        Quote[quotes<br/>报价 CRUD/打印]
+        Param[params · enrich<br/>归一/产品匹配]
+        BOM[bom/derive<br/>确定性合成]
+        Cfg[rulesets · drawings<br/>param-units · tenants]
+        BL[blacklake<br/>同步/定时/齐套]
+    end
+    subgraph Logic[业务逻辑层 · lib 纯函数/规则引擎]
+        direction LR
+        R1[derive-bom<br/>牌1/牌2]
+        R2[high-temp<br/>高温升级]
+        R3[normalize-params<br/>match-product]
+        R4[quote-status<br/>状态机]
+        R5[kitting<br/>齐套分析]
+    end
+    subgraph Data[数据层 · Supabase]
+        direction LR
+        PG[(PostgreSQL<br/>多租户表)]
+        Store[(Storage<br/>小样图 PDF)]
+    end
+    subgraph Ext3[外部服务]
+        Kimi{{Moonshot Kimi<br/>api.moonshot.cn}}
+        BLK{{黑湖小工单 OpenAPI<br/>liteweb.blacklake.cn}}
+    end
+    Browser --> SPA
+    SPA --> Render
+    SPA -->|fetch JSON| API
+    Ext -.推送工单数据.-> BL
+    AIProxy -->|提取/生成| Kimi
+    BL -->|拉取销售/物料/库存| BLK
+    API --> Logic
+    Logic --> PG
+    API --> PG
+    Cfg --> Store
+    classDef front fill:#f0f7ff,stroke:#2c6fbb;
+    classDef api fill:#fff3e0,stroke:#b8860b;
+    classDef logic fill:#f3f0ff,stroke:#7c3aed;
+    classDef data fill:#ecfdf5,stroke:#059669;
+    classDef ext fill:#fef2f2,stroke:#dc2626;
+    class SPA,Render front;
+    class Auth,AIProxy,Quote,Param,BOM,Cfg,BL api;
+    class R1,R2,R3,R4,R5 logic;
+    class PG,Store data;
+    class Kimi,BLK ext;
+    </pre></div>
+
+    <h2>二、核心数据流：一次报价的请求链路</h2>
+    <div class="card"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant U as 业务员浏览器
+    participant F as 前端 SPA
+    participant A as API 路由
+    participant K as Kimi(AI)
+    participant L as 规则引擎 lib
+    participant DB as Supabase
+    U->>F: 粘贴客户询价
+    F->>A: POST /api/claude (param-extract)
+    A->>K: 调用 Kimi 提取参数
+    K-->>A: JSON 参数
+    A-->>F: 结构化 items
+    F->>A: POST /api/params/enrich
+    A->>DB: 查词典 + 产品库
+    A->>L: 归一 + 匹配
+    L-->>A: 核心码/匹配结果
+    A-->>F: 推断字段 + 历史命中
+    Note over F,L: 确认页：deriveBOM 前移 + 高温/标准规则补齐
+    F->>A: POST /api/bom/derive (主体+件号+DN)
+    A->>DB: 取牌1/牌2 规则
+    A->>L: deriveBOM 确定性合成
+    L-->>A: BOM 15 行
+    A-->>F: BOM
+    F->>A: POST /api/quotes (保存)
+    A->>DB: 写 quotes + quote_items 投影
+    </pre></div>
+
+    <h2>三、数据表全景（Supabase · 多租户按 tenant_id 隔离）</h2>
+    <div class="card"><pre class="mermaid">
+flowchart LR
+    subgraph T[租户 & 鉴权]
+        tenants[tenants]
+        tu[tenant_users]
+    end
+    subgraph Biz[业务核心]
+        quotes[quotes]
+        qi[quote_items]
+        params[params]
+        vp[valve_products]
+    end
+    subgraph Knowledge[知识/规则]
+        fr[factory_rulesets<br/>牌1/牌2]
+        vpu[valve_param_units<br/>参数词典]
+        dr[drawings]
+        dt[drawing_templates]
+    end
+    subgraph BLT[黑湖贴源]
+        so[bl_sale_orders]
+        bm[bl_materials]
+        bp[bl_products]
+        ss[bl_sync_state]
+    end
+    ev[events<br/>事件流/飞轮样本]
+    tenants --> quotes & params & vp & fr & dr
+    quotes --> qi
+    quotes -.闭环事件.-> ev
+    </pre></div>
+
+    <h2>四、技术栈要点</h2>
+    <div class="card">
+    <table>
+      <tr><th>层</th><th>技术</th></tr>
+      <tr><td>前端</td><td>Next.js 16 (App Router, Turbopack) · React 19 · Zustand · SWR · Tailwind v4</td></tr>
+      <tr><td>API</td><td>Next.js Route Handlers（同仓 BFF，服务端直连 DB）</td></tr>
+      <tr><td>鉴权</td><td>签名 Cookie 会话（Node crypto，零依赖）· 多租户按 tenant_id 隔离</td></tr>
+      <tr><td>AI</td><td>Moonshot Kimi（moonshot-v1-32k / vision），prompt 在 app/api/claude/skills/*.md</td></tr>
+      <tr><td>规则引擎</td><td>lib/* 纯函数：deriveBOM(牌1/牌2)、high-temp、normalize、match —— 可单测、零幻觉</td></tr>
+      <tr><td>数据</td><td>Supabase（PostgreSQL + Storage）</td></tr>
+      <tr><td>集成</td><td>黑湖小工单 OpenAPI（销售/物料/库存增量同步）+ 浏览器扩展</td></tr>
+    </table>
+    </div>
+    <div class="note">🧩 设计要点：<b>AI 只做"模糊提取"，确定性规则做"补齐与校验"</b> —— 把易错的材质/BOM 推导从 LLM 挪到纯函数，准确率与可维护性都更高。</div>
+  </section>
+</main>
+
+<footer>越强阀门智能报价系统 · 文档由代码自动梳理生成 · 离线可用（内置 mermaid）</footer>
+
+<script src="./lib/mermaid.min.js"></script>
+<script>
+  function show(id){
+    document.querySelectorAll('section').forEach(s=>s.classList.toggle('show', s.id===id));
+    document.getElementById('nav-flow').classList.toggle('active', id==='flow');
+    document.getElementById('nav-arch').classList.toggle('active', id==='arch');
+    if(window.location.hash.slice(1)!==id) history.replaceState(null,'','#'+id);
+  }
+  try{
+    mermaid.initialize({ startOnLoad:true, securityLevel:'loose', theme:'base',
+      themeVariables:{ fontFamily:'-apple-system,"PingFang SC","Microsoft YaHei",sans-serif',
+        primaryColor:'#fff', primaryBorderColor:'#ccc', lineColor:'#8a8a80', fontSize:'14px' } });
+  }catch(e){
+    document.querySelectorAll('.mermaid').forEach(el=>{
+      el.outerHTML='<div class="err">⚠ 图表渲染失败：'+e.message+'。请用现代浏览器打开。</div>';
+    });
+  }
+  if(['flow','arch'].includes(location.hash.slice(1))) show(location.hash.slice(1));
+</script>
+</body>
+</html>
