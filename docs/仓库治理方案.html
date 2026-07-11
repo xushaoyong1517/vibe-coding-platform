@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>阀门智能报价系统｜仓库治理方案</title>
+  <style>
+    :root{--ink:#182235;--muted:#627087;--bg:#f5f7fb;--card:#fff;--line:#dce3ee;--blue:#2563eb;--violet:#7c3aed;--green:#059669;--orange:#c05a00;--red:#c93434}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}header{padding:58px max(24px,calc((100vw - 1160px)/2));color:#fff;background:linear-gradient(120deg,#102248,#254990 60%,#682fab)}h1{font-size:clamp(29px,4.5vw,46px);line-height:1.2;margin:0}header p{max-width:720px;color:#dce9ff;margin:14px 0 0;font-size:17px}main{max-width:1160px;margin:auto;padding:28px 24px 70px}h2{font-size:24px;margin:38px 0 14px}h3{font-size:17px;margin:0 0 8px}.lead{margin:-17px 0 26px;padding:17px 20px;border-left:4px solid var(--violet);background:#f1eaff;border-radius:8px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:20px;box-shadow:0 2px 8px #18223509}.card p{margin:0}.tag{display:inline-block;padding:2px 8px;margin:0 4px 6px 0;border-radius:999px;background:#e8efff;color:#1646a2;font-weight:700;font-size:12px}.warn{border-left:4px solid var(--orange)}.good{border-left:4px solid var(--green)}.danger{border-left:4px solid var(--red)}.roadmap{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;position:relative}.phase{position:relative;padding:16px 14px;background:#fff;border:1px solid var(--line);border-radius:12px;min-height:180px}.phase b{display:block;color:var(--blue);font-size:13px}.phase h3{margin-top:5px}.arrow{color:#91a0b7;font-size:24px;text-align:center;margin:-4px 0}.scope{display:grid;grid-template-columns:1fr 1fr;gap:16px}ul,ol{padding-left:20px;margin:9px 0}li{margin:5px 0}table{border-collapse:collapse;width:100%;background:#fff;font-size:14px}th,td{padding:12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#f7f9fd}code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:#edf1f7;border-radius:4px;padding:2px 5px}.check{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.check div{background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:11px}.check div::before{content:'✓';color:var(--green);font-weight:800;margin-right:8px}.small{font-size:13px;color:var(--muted)}@media(max-width:840px){.grid,.two,.scope,.roadmap,.check{grid-template-columns:1fr}.roadmap{gap:8px}.phase{min-height:auto}}
+  </style>
+</head>
+<body>
+  <header><h1>阀门智能报价系统<br>仓库整体治理方案</h1><p>将“通用 AI Coding 模板 + 阀门改造”的混合仓库，收敛为边界清晰、规则可信、可持续演进的阀门业务系统。</p></header>
+  <main>
+    <div class="lead"><b>治理主张：</b>产品只服务阀门问题。保留 Kimi 的阀门文本/图纸解析能力，但删除“创建应用、写文件、执行命令、Sandbox 预览”的通用 AI 编程平台遗留。</div>
+
+    <h2>目标状态</h2><div class="grid">
+      <article class="card good"><h3>业务聚焦</h3><p>询价解析、参数归一、产品匹配、确定性 BOM、报价、图纸与黑湖协同构成唯一主线。</p></article>
+      <article class="card good"><h3>规则可信</h3><p>AI 负责模糊提取；编码、材质、BOM、状态流转均由规则和数据决定，并可测试与审计。</p></article>
+      <article class="card good"><h3>租户安全</h3><p>可信会话中的 <code>tenant_id</code> 是所有数据访问边界，配合数据库 RLS 与 API 校验。</p></article>
+    </div>
+
+    <h2>目标架构</h2><div class="card"><div class="roadmap">
+      <div class="phase"><b>客户端</b><h3>阀门报价工作台</h3><p>录入、确认、BOM、报价、规则、图纸、齐套。</p></div><div class="arrow">→</div>
+      <div class="phase"><b>服务层</b><h3>Next.js 领域 API</h3><p>认证、输入校验、租户边界、业务编排。</p></div><div class="arrow">→</div>
+      <div class="phase"><b>领域层</b><h3>规则与数据</h3><p>归一化、产品匹配、BOM、高温规则、状态机、Supabase。</p></div><div class="arrow">→</div>
+      <div class="phase"><b>外部服务</b><h3>Kimi 与黑湖</h3><p>解析候选参数；同步订单、产品、物料和库存。</p></div>
+    </div><p class="small">依赖方向必须从左至右：页面不承载规则，AI 不直接决定 BOM，外部数据不绕过租户边界。</p></div>
+
+    <h2>治理路线图</h2><div class="roadmap">
+      <article class="phase"><b>第一步</b><h3>剔除死代码</h3><p>先移除 AI Coding、Sandbox、无入口页面和无消费者组件；删除批次独立、可回滚。</p></article>
+      <article class="phase"><b>第二步</b><h3>静态质量体检</h3><p>对保留代码运行 React Doctor、TypeScript、lint、规则单测和生产构建。</p></article>
+      <article class="phase"><b>第三步</b><h3>模块划分治理</h3><p>按报价、参数与产品、BOM 规则、图纸、黑湖、租户与认证等功能域拆分；每次只迁移一个模块。</p></article>
+      <article class="phase"><b>第四步</b><h3>解决关键问题</h3><p>优先处理安全、正确性、性能和构建阻断；一般风格问题不抢占业务稳定性投入。</p></article>
+      <article class="phase"><b>第五步</b><h3>业务稳定性</h3><p>集中治理数据库、迁移与备份、RLS、多租户、登录会话、Kimi 降级和黑湖同步。</p></article>
+      <article class="phase"><b>第六步</b><h3>持续门禁</h3><p>将静态检查和关键业务回归纳入 CI，防止后续改造重新引入问题。</p></article>
+    </div>
+
+    <h2>静态分析的处理优先级</h2><div class="two"><article class="card"><h3>分析工具链</h3><ol><li>React Doctor：React 正确性、性能与安全类诊断。</li><li><code>pnpm type-check</code>：类型边界、空值与接口协议。</li><li>Lint：React Hooks、可疑写法、未使用代码与基础规范。</li><li>规则单测 + <code>pnpm build</code>：BOM 领域回归与交付可用性。</li></ol></article><article class="card warn"><h3>修复排序</h3><ol><li>安全和跨租户数据泄漏风险。</li><li>构建失败、运行崩溃、错误业务结果。</li><li>严重性能退化与报价主链路阻塞。</li><li>可维护性、风格和非阻断提示。</li></ol></article></div>
+
+    <h2>AI Coding 遗留清理边界</h2><div class="scope">
+      <article class="card good"><h3>已完成：通用 AI 编程平台清理</h3><p><span class="tag">ykq 分支已执行</span></p><ul><li><code>ai/</code> 全目录：AI Gateway、Coding Agent 工具。</li><li><code>app/api/chat</code>、<code>errors</code>、<code>models</code>、<code>sandboxes</code>。</li><li><code>app/chat.tsx</code>、文件浏览器、命令日志、预览、Sandbox 状态。</li><li><code>components/chat</code>、<code>file-explorer</code>、<code>commands-logs</code>、<code>error-monitor</code>、模型选择及 Coding UI 外壳。</li><li>AI SDK、Vercel Sandbox、BotId、Tailwind/shadcn 遗留及专属 UI 依赖。</li></ul></article>
+      <article class="card good"><h3>必须保留：阀门业务 AI 与领域能力</h3><p><span class="tag">主线能力</span></p><ul><li><code>app/api/claude</code>：实际为 Kimi 阀门参数/图片提取，后续应改名为 <code>api/valve-ai</code>。</li><li><code>app/api/drawings/parse</code>：阀门图纸视觉解析。</li><li><code>params</code>、<code>bom</code>、<code>quotes</code>、<code>rulesets</code>、<code>blacklake</code> API。</li><li><code>lib/derive-bom</code>、归一化、匹配、高温、黑湖同步及其测试。</li><li>Kimi prompts 的 Markdown 导入机制与 <code>raw-loader</code>。</li></ul></article>
+    </div>
+
+    <h2>关键治理动作</h2><div class="two">
+      <article class="card"><h3>前端与 API</h3><ul><li>将 <code>ValveQuoteApp</code> 分拆成报价、产品、规则、图纸、齐套 feature。</li><li>API 统一使用 Zod 校验、稳定错误码和审计字段。</li><li>客户端 DTO 与接口入参共享 schema，减少字段协议漂移。</li></ul></article>
+      <article class="card"><h3>数据与权限</h3><ul><li>按 <code>tenant_id</code> 审核所有表和 Storage 的 RLS 策略。</li><li>生产环境禁用默认认证密钥与空密码进入。</li><li>迁移必须可前滚、可验证；禁止直接手改生产库。</li></ul></article>
+      <article class="card"><h3>规则与 AI</h3><ul><li>规则集支持版本、生效时间、租户范围、变更人和回滚。</li><li>AI 输出先过 JSON/schema，再进入归一化与确定性规则。</li><li>沉淀询价→建议→人工确认→成交的回归样本闭环。</li></ul></article>
+      <article class="card"><h3>运行与交付</h3><ul><li>最小 CI：类型检查、规则测试、构建、迁移静态检查。</li><li>监控 Kimi 成功率、黑湖水位、BOM 回退率和 API 错误。</li><li>维护备份恢复、发布回滚、数据字典、规则指南与操作手册。</li></ul></article>
+    </div>
+
+    <h2>每阶段验收门禁</h2><div class="check"><div><code>pnpm type-check</code> 通过</div><div>领域规则单测通过，新增规则有正反例</div><div><code>pnpm build</code> 通过，首页可进入报价工作台</div><div>询价→确认→BOM→保存→打印主链路可用</div><div>跨租户不能读写报价、规则、图纸与同步数据</div><div>黑湖增量同步可重复执行且水位可观测</div></div>
+
+    <h2>当前待决策事项</h2><table><thead><tr><th>事项</th><th>需要明确的决策</th></tr></thead><tbody><tr><td>Kimi 能力</td><td>是否统一重命名为 <code>valve-ai</code>，以及是否保留模型配置能力。</td></tr><tr><td>规则权限</td><td>各租户是否可自行编辑规则，或仅由总部发布、租户只读。</td></tr><tr><td>版本与审批</td><td>报价、BOM、图纸修订是否需要正式版本号和审批流。</td></tr><tr><td>黑湖数据权威</td><td>订单、产品、物料、库存分别以黑湖还是本系统为最终数据源。</td></tr><tr><td>演示登录</td><td>是否保留空密码进入；生产环境建议彻底禁用。</td></tr></tbody></table>
+    <p class="small">执行状态：死代码清理已完成，规则测试 68/68 通过；下一阶段进入 React Doctor、TypeScript、lint 和生产构建的静态质量分析。</p>
+  </main>
+</body></html>
