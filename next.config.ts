@@ -1,5 +1,4 @@
 import type { NextConfig } from 'next'
-import { withBotId } from 'botid/next/config'
 
 const nextConfig: NextConfig = {
   devIndicators: false,  // 关闭左下角开发指示器，避免遮挡侧栏底部
@@ -19,19 +18,6 @@ const nextConfig: NextConfig = {
       },
     },
   },
-  images: {
-    remotePatterns: [
-      {
-        protocol: 'https',
-        hostname: 'vercel.com',
-        port: '',
-        pathname: '/api/www/avatar/**',
-      },
-    ],
-    dangerouslyAllowSVG: true,
-    contentDispositionType: 'attachment',
-    contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;",
-  },
 }
 
-export default withBotId(nextConfig)
+export default nextConfig

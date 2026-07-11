@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>阀门智能报价系统｜整体架构分析</title>
+  <style>
+    :root { --ink:#172033; --muted:#5d6b82; --line:#dce3ee; --paper:#fff; --bg:#f5f7fb; --blue:#2563eb; --purple:#7c3aed; --green:#059669; --orange:#c05a00; --red:#dc2626; }
+    * { box-sizing:border-box } body { margin:0; color:var(--ink); background:var(--bg); font:15px/1.7 ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+    header { color:#fff; padding:56px max(24px,calc((100vw - 1180px)/2)); background:linear-gradient(125deg,#102248,#263d7f 57%,#5b32a5); }
+    header p { max-width:760px; color:#dbeafe; margin:12px 0 0; font-size:17px } h1 { margin:0; font-size:clamp(28px,4vw,46px); line-height:1.2 } h2 { margin:0 0 14px; font-size:23px } h3 { margin:0 0 8px; font-size:16px } main { max-width:1180px; margin:0 auto; padding:28px 24px 60px; }
+    .notice { margin:-19px 0 28px; padding:16px 20px; border-left:4px solid #7c3aed; background:#f1eaff; border-radius:8px; } .grid { display:grid; gap:18px; grid-template-columns:repeat(3,1fr) } .card,.diagram { background:var(--paper); border:1px solid var(--line); border-radius:14px; padding:22px; box-shadow:0 2px 8px #17203309; } .diagram { overflow:auto; margin:18px 0 28px; }
+    .tag { display:inline-block; padding:2px 9px; margin:0 5px 6px 0; font-size:12px; font-weight:700; border-radius:999px; background:#e8efff; color:#1849a9 } .tag.logic { background:#f1eaff;color:#6d28d9 }.tag.data { background:#e7f9f0;color:#05744f }.tag.external { background:#fff0e7;color:#b54708 }
+    .arch-flow { display:grid; grid-template-columns:1fr 42px 1fr 42px 1fr; align-items:center; gap:10px; min-width:760px; padding:12px 4px }.arch-node { text-align:center; border:1px solid #93b4ee; border-radius:10px; padding:14px 9px; background:#eef4ff; font-weight:700 }.arch-node.logic { background:#f3ecff; border-color:#c4a6f4 }.arch-node.ext { background:#fff2e8; border-color:#f0bd8a }.arch-node.data { background:#e9faf1; border-color:#8bd4b0 }.arch-arrow { color:#71809a; text-align:center; font-size:28px; font-weight:700 }.arch-caption { text-align:center; color:var(--muted); font-size:12px; margin-top:5px }
+    .section { margin:32px 0 } .two { display:grid;grid-template-columns:1fr 1fr;gap:18px } ul { padding-left:20px;margin:8px 0 } li { margin:5px 0 } code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;background:#edf1f7;padding:2px 5px;border-radius:4px } table { width:100%;border-collapse:collapse;background:white } th,td { padding:11px 12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line) } th { background:#f6f8fc;font-size:13px } .risk { border-left:4px solid var(--orange) } .good { border-left:4px solid var(--green) } .small { color:var(--muted);font-size:13px } .summary { display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:25px }.stat {background:#ffffff22;border:1px solid #ffffff35;border-radius:10px;padding:12px}.stat b{display:block;font-size:20px}@media(max-width:800px){.grid,.two,.summary{grid-template-columns:1fr}header{padding:40px 24px}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>阀门智能报价系统：整体架构分析</h1>
+    <p>基于当前代码库（2026-07-11）的静态分析。通用 AI Coding 与 Sandbox 遗留已剔除，仓库已收敛到阀门业务主线。</p>
+    <div class="summary"><div class="stat"><b>Next.js 16</b>单仓全栈 BFF</div><div class="stat"><b>Supabase</b>多租户业务数据</div><div class="stat"><b>Kimi</b>非确定性信息提取</div><div class="stat"><b>纯函数规则</b>确定性 BOM 合成</div></div>
+  </header>
+  <main>
+    <div class="notice"><b>一句话结论：</b>浏览器中的 React 单页报价工作台通过 Next.js Route Handlers 调用 Kimi、规则引擎和 Supabase；AI 仅负责把询价文本/图片转为结构化参数，材料与 BOM 由可测试的确定性规则生成。</div>
+
+    <section class="section"><h2>1. 总体分层</h2>
+      <div class="diagram"><div class="arch-flow">
+        <div><div class="arch-node">业务员浏览器</div><div class="arch-caption">React 报价工作台</div></div><div class="arch-arrow">→</div>
+        <div><div class="arch-node">Next.js API 路由</div><div class="arch-caption">认证、BFF、领域接口</div></div><div class="arch-arrow">→</div>
+        <div><div class="arch-node logic">业务规则引擎</div><div class="arch-caption">归一化、匹配、BOM</div></div>
+        <div></div><div></div><div class="arch-arrow">↓</div><div></div><div></div>
+        <div><div class="arch-node ext">Kimi AI</div><div class="arch-caption">文本、文件、图纸提取</div></div><div class="arch-arrow">→</div>
+        <div><div class="arch-node">领域 API 编排</div><div class="arch-caption">校验、归一、规则调用</div></div><div class="arch-arrow">→</div>
+        <div><div class="arch-node data">Supabase</div><div class="arch-caption">PostgreSQL、Storage、多租户</div></div>
+        <div></div><div></div><div class="arch-arrow">↓</div><div></div><div></div>
+        <div><div class="arch-node ext">Chrome 黑湖扩展</div><div class="arch-caption">MV3 工单侧能力</div></div><div class="arch-arrow">→</div>
+        <div><div class="arch-node ext">外部服务</div><div class="arch-caption">Kimi AI、黑湖小工单</div></div><div class="arch-arrow">→</div>
+        <div><div class="arch-node data">同步与业务数据</div><div class="arch-caption">规则、报价、产品、库存</div></div>
+      </div></div>
+      <div class="grid"><article class="card"><h3>阀门业务入口</h3><span class="tag">app/page.tsx</span><span class="tag">valve-quote/app.tsx</span><p>报价录入、参数确认、BOM、报价状态、规则与数据管理、黑湖齐套分析。首页直接渲染 <code>ValveQuoteApp</code>。</p></article><article class="card"><h3>AI 的业务边界</h3><span class="tag logic">app/api/claude</span><span class="tag logic">drawings/parse</span><p>Kimi 只负责文本、文件与图纸中的候选信息提取，输出仍需进入归一化和确定性规则。</p></article><article class="card"><h3>单仓 BFF</h3><span class="tag data">app/api/*</span><span class="tag data">lib/*</span><p>UI 不直连外部服务；同一个 Next.js 部署同时提供前端、鉴权、领域 API、外部集成代理。</p></article></div>
+    </section>
+
+    <section class="section"><h2>2. 核心报价链路</h2>
+      <div class="diagram"><pre class="mermaid">sequenceDiagram
+  autonumber
+  participant U as 业务员
+  participant F as ValveQuoteApp
+  participant A as API Routes
+  participant K as Kimi
+  participant R as lib 规则引擎
+  participant S as Supabase
+  U->>F: 粘贴询价 / 上传文件或图片
+  F->>A: POST /api/claude (param-extract)
+  A->>K: 提示词 + 文本/视觉输入
+  K-->>A: JSON 参数
+  A-->>F: 原始结构化字段
+  F->>A: POST /api/params/enrich
+  A->>S: 查参数词典和产品库
+  A->>R: normalize + match + 编码
+  A-->>F: 归一字段、历史命中、待确认项
+  F->>A: POST /api/bom/derive
+  A->>S: 取租户规则、历史骨架/小样图
+  A->>R: deriveBOM / buildBomFromSkeleton
+  R-->>A: BOM、牌1、牌2、warnings
+  A-->>F: 可人工复核的 BOM
+  F->>A: POST /api/quotes
+  A->>S: quotes + quote_items 投影</pre></div>
+      <div class="two"><article class="card good"><h3>关键设计：AI 与规则分工</h3><p><b>AI：</b>处理不规范的自然语言、表格、图片，抽取候选参数。<br><b>规则：</b>归一化、产品匹配、牌号材质、高温升级和 BOM 填充。这将高风险、可验证的业务知识从 LLM 输出中剥离出来。</p></article><article class="card"><h3>BOM 的三级回退</h3><ol><li>相近编码、结构和驱动条件的<b>历史报价骨架</b></li><li>关联<b>小样图模板</b>（兼容占位符旧模板）</li><li><b>标准 15 行</b>的 <code>deriveBOM</code> 结果</li></ol><p class="small">无论骨架来源，材质仍以当前租户规则重新填充，避免复制历史错误。</p></article></div>
+    </section>
+
+    <section class="section"><h2>3. 模块职责地图</h2>
+      <table><thead><tr><th>层</th><th>主要位置</th><th>职责</th><th>依赖方向</th></tr></thead><tbody>
+      <tr><td>页面与状态</td><td><code>components/valve-quote/app.tsx</code></td><td>大型客户端工作台；报价、状态流转、图表、页面切换和 API 调用。</td><td>→ API</td></tr>
+      <tr><td>领域 API</td><td><code>app/api/quotes</code>、<code>bom</code>、<code>params</code>、<code>rulesets</code>、<code>drawings</code></td><td>请求校验、租户解析、组织数据库与规则调用。</td><td>→ lib / Supabase</td></tr>
+      <tr><td>AI 代理</td><td><code>app/api/claude</code></td><td>按 skill 组合服务端提示词；支持文本/视觉，失败重试。</td><td>→ Moonshot</td></tr>
+      <tr><td>业务规则</td><td><code>lib/derive-bom.ts</code>、<code>high-temp.ts</code>、<code>normalize-params.ts</code>、<code>match-product.ts</code></td><td>无 UI、副作用尽量少；覆盖单元测试，是业务正确性的核心。</td><td>→ 规则数据</td></tr>
+      <tr><td>数据访问</td><td><code>lib/supabase.ts</code>、<code>supabase/migrations</code></td><td>Postgres 中的多租户业务数据、JSON 原单与投影表、对象存储图纸。</td><td>→ Supabase</td></tr>
+      <tr><td>集成</td><td><code>lib/blacklake/*</code>、<code>blacklake-extension</code></td><td>黑湖订单/客户/产品/物料/库存同步；有全量与增量水位机制。</td><td>→ 黑湖 OpenAPI</td></tr>
+      </tbody></table>
+    </section>
+
+    <section class="section"><h2>4. 数据模型与租户边界</h2>
+      <div class="diagram"><pre class="mermaid">flowchart LR
+  T[tenants] --> Q[quotes 报价原文 JSON]
+  T --> P[valve_products 产品编码库]
+  T --> R[factory_rulesets 牌1牌2规则]
+  T --> D[drawings templates 小样图 BOM骨架]
+  T --> U[valve_param_units 参数字典]
+  Q --> I[quote_items 检索投影 codes BOM]
+  Q -.事件.-> E[events 行为成交事实]
+  T --> B[黑湖同步镜像]
+  classDef db fill:#e7f9f0,stroke:#059669
+  class T,Q,P,R,D,U,I,E,B db</pre></div>
+      <p>多租户的关键入口是 <code>getTenantId(req)</code>：优先读取签名 Cookie 中的 <code>tenant_id</code>，API 再以该值写入和过滤数据。认证采用 HMAC 签名会话 + scrypt 密码哈希；生产环境会拒绝默认密钥。</p>
+    </section>
+
+    <section class="section"><h2>5. 外部能力与运行时</h2><div class="two"><article class="card"><h3>黑湖同步</h3><p><code>runSync</code> 统一服务于手动接口和定时任务。增量同步读取上次水位，额外回看 15 分钟抵消边界漏数；批量 upsert，每日/全量模式再清除本次未刷新的陈旧数据。</p></article><article class="card"><h3>Kimi 领域 AI</h3><p><code>/api/claude</code> 和图纸解析接口调用 Moonshot 文本/视觉模型，处理非结构化输入；材料、编码与 BOM 仍由领域规则决定。</p></article></div></section>
+
+    <section class="section"><h2>6. 架构判断与优先级建议</h2><div class="grid"><article class="card good"><h3>优势</h3><ul><li>“AI 提取 + 规则决策”的边界正确且可审计。</li><li>规则函数配有多份 <code>*.test.mjs</code>，适合持续固化制造知识。</li><li>历史 BOM 只复用零件骨架、重算材质，降低经验污染。</li></ul></article><article class="card risk"><h3>主要风险</h3><ul><li><code>ValveQuoteApp</code> 职责过多、文件很大，领域状态与视图耦合。</li><li>当前仍有一处 TypeScript 类型错误，生产构建基线尚未完全通过。</li><li>数据客户端使用 Supabase anon key；生产安全高度依赖 RLS 与 API 层租户过滤。</li></ul></article><article class="card"><h3>建议演进顺序</h3><ol><li>完成 React Doctor、TypeScript、lint 与构建基线。</li><li>将报价工作台按“报价/规则/数据/齐套”拆为 feature 模块与 hooks。</li><li>为每个 API 建立输入 schema 与鉴权/tenant 测试。</li></ol></article></div></section>
+    <p class="small">分析依据：<code>app/page.tsx</code>、<code>components/valve-quote/app.tsx</code>、<code>app/api/*</code>、<code>lib/*</code>、<code>supabase/migrations/*</code> 及仓库现有设计文档。</p>
+  </main>
+  <script src="./lib/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:'base',themeVariables:{primaryColor:'#e8efff',primaryBorderColor:'#2563eb',lineColor:'#64748b',fontFamily:'system-ui'}})</script>
+</body>
+</html>
